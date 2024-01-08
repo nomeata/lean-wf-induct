@@ -72,6 +72,20 @@ def withLetDecls {α} (vals : Array Expr) (k : Array FVarId → MetaM α) (i : N
     k #[]
 termination_by _ vals k i => vals.size - i
 
+-- Because of term duplications we might encounter the same IH multiple times.
+-- We deduplicate them (by type, not proof term) here.
+-- This could be improved and catch cases where the same IH is used in different contexts.
+-- (Cf. `assignSubsumed` in `WF.Fix`)
+def deduplicateIHs (vals : Array Expr) : MetaM (Array Expr) := do
+  let mut vals' := #[]
+  let mut types := #[]
+  for v in vals do
+    let t ← inferType v
+    unless types.contains t do
+      vals' := vals'.push v
+      types := types.push t
+  return vals'
+
 def assertIHs (vals : Array Expr) (mvarid : MVarId) : MetaM MVarId := do
   let mut mvarid := mvarid
   for v in vals, i in [0:vals.size] do
@@ -83,6 +97,9 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
     (goal : Expr) (e : Expr) : MetaM Expr := do
   -- logInfo m!"Tail position {e}"
   let (_e', IHs) ← process fn oldIH newIH e |>.run #[]
+
+  -- deduplicatae IHs
+  let IHs ← deduplicateIHs IHs
 
   let mvar ← mkFreshExprSyntheticOpaqueMVar goal (tag := `hyp)
   let mut mvarId := mvar.mvarId!
@@ -256,89 +273,3 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
           safety := DefinitionSafety.safe
       }
   pure ()
-
-
-#exit
-
-
-open Lean Lean.Meta in
-def tst (declName : Name) : MetaM Unit := do
-  IO.println (← getUnfoldEqnFor? declName)
-
-namespace OverlappingTest
-
-
-def f : Nat → Bool -- := fun x => match h : x with
-  | 0 => True
-  | 1 => False
-  | n+1 => f (n - 1)
-termination_by f n => n
-decreasing_by
-  · simp_wf
-    apply Nat.lt_succ_of_le
-    apply Nat.sub_le
-
-#derive_induction f
-#check f.induct
-
-example (n : Nat) : f n ↔ n % 2 = 0 := by
-  induction n using f.induct with
-  | case1 => simp [f]
-  | case2 => simp [f]
-  | case3 n IH =>
-    have h : n ≠ 0 := sorry
-    simp [f, IH]
-    cases n with
-    | zero => contradiction
-    | succ n =>
-      rw [Nat.succ_sub_succ, Nat.sub_zero]
-      rw [Nat.mod_eq_sub_mod (a := Nat.succ _) (h := Nat.le_add_left 2 n)]
-      rw [Nat.add_sub_cancel (m := 2)]
-      apply Iff.rfl
-
-#eval tst ``f
-
-#check f.match_1
-#check f.match_1.splitter
-#check f.match_1.eq_3
-
-#check f._eq_3
-#check f._unfold
-
-
-end OverlappingTest
-
-
-def foo : Nat → Nat
-  | 0 => 0
-  | n =>
-    have h : n ≠ 0 := sorry
-    foo (n - 1)
-termination_by foo n => n
-decreasing_by
-  · simp_wf
-    apply Nat.sub_lt
-    apply Nat.zero_lt_of_ne_zero h
-    apply Nat.zero_lt_one
-
-
-#derive_induction foo
-#check foo.induct
-
-axiom foo.induct_better (motive : Nat → Prop) (case1 : motive 0)
-  (case2 : ∀ (n : Nat), n ≠ 0 → motive (n - 1) → motive n) (x : Nat) : motive x
-
-theorem foo_eq_0 (n : Nat) : foo n = 0 := by
-  induction n using foo.induct_better with
-  | case1 => simp [foo]
-  | case2 n h0 IH => simp [foo]; exact IH
-
-
-
-#eval tst ``foo
-
-#check foo._eq_2
-
-set_option pp.match false
-set_option pp.proofs.withType false
-#check foo.match_1.splitter
