@@ -39,14 +39,22 @@ partial def process (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
     let e' ← withTransparency .all do whnf e
     -- TODO: Check that e' actually changed
     process fn oldIH newIH e'
-  else if let .app e1 e2 := e then
-    return .app (← process fn oldIH newIH e1) (← process fn oldIH newIH e2)
   else if let .letE n t v b _ := e then
     let v' ← process fn oldIH newIH v
     withLetDecl n t v' fun x => do
       mapWriter (mkLetFVars (usedLetOnly := true) #[x] ·) do
       let b' ← process fn oldIH newIH (b.instantiate1 x)
       mkLetFVars (usedLetOnly := false) #[x] b'
+  else if let some (n, t, v, b) := e.letFun? then
+    let v' ← process fn oldIH newIH v
+    withLocalDecl n .default t fun x => do
+      mapWriter (mkLetFun x v' ·) do
+      let b' ← process fn oldIH newIH (b.instantiate1 x)
+      mkLetFun x v' b'
+  -- else if e.isMData then
+    -- return e.updateMData! (← process fn oldIH newIH e.getMDataArg!
+  else if let .app e1 e2 := e then
+    return .app (← process fn oldIH newIH e1) (← process fn oldIH newIH e2)
   else if e.isLambda then
     lambdaTelescope e fun xs body => do
       mapWriter (mkLambdaFVars (usedOnly := true) xs ·) do
@@ -177,11 +185,15 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
     withLetDecl n t v fun x => do
       -- Should we keep let declaraions in the inductive theorem?
       -- If not, we can add them to `toClear`.
+      let toClear := toClear.push x.fvarId!
       let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH (b.instantiate1 x)
       mkLetFVars #[x] b'
   else if let some (n, t, v, b) := e.letFun? then
     -- TODO: process t and b
     withLocalDecl n .default t fun x => do
+      -- Should we keep have declaraions in the inductive theorem?
+      -- If not, we can add them to `toClear`.
+      let toClear := toClear.push x.fvarId!
       let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH (b.instantiate1 x)
       -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
       mkLetFun x v b'
@@ -245,44 +257,6 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
       }
   pure ()
 
-namespace Test
-
-def ackermann : (Nat × Nat) → Nat
-  | (0, m) => m + 1
-  | (n+1, 0) => ackermann (n, 1)
-  | (n+1, m+1) => ackermann (n, ackermann (n + 1, m))
-termination_by ackermann p => p
-
--- set_option pp.explicit true
--- #derive_induction ackermann
--- #check ackermann.induct
-
-universe u
-opaque _root_.List.attach : {α : Type u} → (l : List α) → List { x // x ∈ l }
-
-inductive Tree | node : List Tree → Tree
-def Tree.rev : Tree → Tree
-  | node ts => .node (ts.attach.map (fun ⟨t, _ht⟩ => t.rev) |>.reverse)
-
-#derive_induction Tree.rev
-
-set_option linter.unusedVariables false in
-def with_have : Nat → Nat
-  | 0 => 0
-  | n+1 =>
-    if n % 2 = 0 then
-      let h1 : n < n+2 := Nat.lt_trans (Nat.lt_succ_self _) (Nat.lt_succ_self _)
-      with_have n
-    else
-      have h2 : n < n+1 := Nat.lt_succ_self n
-      with_have n
-termination_by with_have n => n
-
-set_option pp.match false in
-#derive_induction with_have
-#check with_have.induct
-
-end Test
 
 #exit
 
