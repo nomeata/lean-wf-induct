@@ -117,9 +117,6 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
 
 partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Array FVarId)
     (goal : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM Expr := do
-  if let some caseOnApp ← toCasesOnApp? e then
-    throwError m!"TODO: buildInductionBody hits caseOnApp {caseOnApp.declName}"
-
   if e.isDIte then
     let #[_α, c, h, t, f] := e.getAppArgs | unreachable!
     -- TODO look for recursive calls in α, c, h
@@ -133,6 +130,9 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       mkLambdaFVars args f'
     let u ← getLevel goal
     return mkApp5 (mkConst ``dite [u]) goal c h t' f'
+
+  if let some caseOnApp ← toCasesOnApp? e then
+    throwError m!"TODO: buildInductionBody hits caseOnApp {caseOnApp.declName}"
 
   if let some matcherApp ← matchMatcherApp? e then
     -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
@@ -218,22 +218,35 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
     -- logInfo m!"End of buildInductionBody: {e}"
     createHyp motiveFVar fn oldIH newIH toClear goal e
 
-elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
-  let orig_e ← Term.withSynthesize <| Term.elabTerm ident none
-  -- TODO: There must be a nicer way to fully qualify the ident
-  let .const name _ := orig_e | throwErrorAt ident "not a single identifier"
-  let e ← whnf (← instantiateMVars orig_e)
+partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
   lambdaTelescope e fun params body => do
+    if body.isAppOf ``WellFounded.fixF then
+      k params body
+    else
+      let body' ← whnf body
+      if body == body' then
+        throwError "Term {body} is not a fixF application"
+      else
+        findFixF body' (fun args e' => k (params ++ args) e')
+
+
+
+elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
+  let [name] ← resolveGlobalConst ident
+    | throwErrorAt ident m!"ambiguous identifier"
+  let info ← getConstInfo name
+  let e := Expr.const name (info.levelParams.map mkLevelParam)
+  findFixF e fun params body => do
     unless params.size > 0 do
-      throwError f!"Term is not a lambda application"
+      throwError "Term {e} is not a lambda application"
     body.withApp fun f fixArgs => do
       -- logInfo f!"{fixArgs}"
       unless f.isConstOf ``WellFounded.fixF do
-        throwError f!"Term isn’t application of {``WellFounded.fixF}"
+        throwError "Term isn’t application of {``WellFounded.fixF}, but of {f}"
       let #[argType, rel, _motive, body, arg, acc] := fixArgs |
-        throwError f!"Application of WellFounded.fixF has wrong arity {fixArgs.size}"
+        throwError "Application of WellFounded.fixF has wrong arity {fixArgs.size}"
       unless ← isDefEq arg params.back do
-        throwError f!"fixF application argument {arg} is not function argument "
+        throwError "fixF application argument {arg} is not function argument "
       let [argLevel, _motiveLevel] := f.constLevels! | unreachable!
       -- logInfo body
       -- mkFresh
@@ -242,7 +255,7 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
       withLocalDecl `motive .default motiveType fun motive => do
 
       let e' := mkAppN (.const ``WellFounded.fixF [argLevel, levelZero]) #[argType, rel, motive]
-      let fn := mkAppN orig_e params.pop
+      let fn := mkAppN e params.pop
       let body' ← forallTelescope (← inferType e').bindingDomain! fun xs _ => do
         let #[param, genIH] := xs | unreachable!
         -- open body with the same arg
@@ -253,14 +266,12 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
 
       let e' := mkAppN e' #[body', arg, acc]
 
-
       let e' ← mkLambdaFVars #[params.back] e'
       let mvars ← getMVarsNoDelayed e'
       for mvar in mvars, i in [:mvars.size] do
         mvar.setUserName s!"case{i+1}"
       let e' ← mkLambdaFVars (binderInfoForMVars := .default) (mvars.map .mvar) e'
       let e' ← mkLambdaFVars (binderInfoForMVars := .default) (params.pop ++ #[motive]) e'
-      let e' ← mkLambdaFVars params.pop e'
       let e' ← instantiateMVars e'
       let eTyp ← inferType e'
       -- logInfo m!"eTyp: {eTyp}"
@@ -268,7 +279,7 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
       check e'
 
       addDecl <| Declaration.defnDecl {
-          name := .append name `induct, levelParams := [], type := eTyp, value := e'
+          name := .append name `induct, levelParams := info.levelParams, type := eTyp, value := e'
           hints := ReducibilityHints.regular 0
           safety := DefinitionSafety.safe
       }

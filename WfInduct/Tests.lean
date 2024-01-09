@@ -12,9 +12,7 @@ termination_by ackermann p => p
 /--
 info: ackermann.induct (motive : Nat × Nat → Prop) (case1 : ∀ (m : Nat), motive (0, m))
   (case2 : ∀ (n : Nat), motive (n, 1) → motive (Nat.succ n, 0))
-  (case3 :
-    ∀ (n m : Nat),
-      motive (n, ackermann (n + 1, m)) → motive (n + 1, m) → motive (n + 1, m) → motive (Nat.succ n, Nat.succ m))
+  (case3 : ∀ (n m : Nat), motive (n, ackermann (n + 1, m)) → motive (n + 1, m) → motive (Nat.succ n, Nat.succ m))
   (x : Nat × Nat) : motive x
 -/
 #guard_msgs in
@@ -152,7 +150,8 @@ termination_by with_dite_non_tailrec n => n
 #derive_induction with_dite_non_tailrec
 
 /--
-info: with_dite_non_tailrec.induct (motive : Nat → Prop) (case1 : ∀ (x : Nat), (x - 1 < x → motive (x - 1)) → motive x)
+info: with_dite_non_tailrec.induct (motive : Nat → Prop)
+(case1 : ∀ (x : Nat), (x - 1 < x → motive (x - 1)) → motive x)
   (x : Nat) : motive x
 -/
 #guard_msgs in
@@ -168,7 +167,8 @@ termination_by with_dite_tailrec n => n
 #derive_induction with_dite_tailrec
 
 /--
-info: with_dite_tailrec.induct (motive : Nat → Prop) (case1 : ∀ (x : Nat), x - 1 < x → motive (x - 1) → motive x)
+info: with_dite_tailrec.induct (motive : Nat → Prop)
+(case1 : ∀ (x : Nat), x - 1 < x → motive (x - 1) → motive x)
   (case2 : ∀ (x : Nat), ¬x - 1 < x → motive x) (x : Nat) : motive x
 -/
 #guard_msgs in
