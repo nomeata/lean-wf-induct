@@ -166,6 +166,8 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
           let uElim ← getLevel goal -- TODO: Double check
           pure <| matcherApp.matcherLevels.set! pos uElim
 
+      -- We replace the matcher with the splitter
+      -- (TODO: What if there is a splitter in the first place)
       let matchEqns ← Match.getEquationsFor matcherApp.matcherName
       let splitter := matchEqns.splitterName
 
