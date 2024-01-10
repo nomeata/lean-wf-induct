@@ -19,16 +19,18 @@ def merge : List α × List α → List α
 -- set_option pp.raw true
 -- set_option pp.proofs.withType false
 
--- #derive_induction merge
--- #check merge.induct
+#derive_induction merge
+#check merge.induct
 
 
-theorem merge.induct {α : Type uu} (r : α → α → Prop) (motive : List α × List α → Prop)
+theorem merge.induct1 {α : Type uu} (r : α → α → Prop) [DecidableRel r] (motive : List α × List α → Prop)
   (case1 : ∀ (l' : List α), motive ([], l'))
   (case2 : ∀ (l : List α), ¬ (l = []) → motive (l, []))
   (case3 : ∀ (a : α) (l : List α) (b : α) (l' : List α), r a b → motive (l, b :: l') → motive (a :: l, b :: l'))
   (case4 : ∀ (a : α) (l : List α) (b : α) (l' : List α), ¬r a b → motive (a :: l, l') → motive (a :: l, b :: l'))
   (x : List α × List α) : motive x := sorry
+
+#check @merge.induct = @merge.induct1
 
 theorem merge.induct2 {α : Type uu} (r : α → α → Prop) (motive : (r : α → α → Prop) → (DecidableRel r) → List α × List α → Prop)
   (case1 : ∀  [DecidableRel r] (l' : List α), motive r ‹_› ([], l'))

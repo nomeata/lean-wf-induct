@@ -173,3 +173,21 @@ info: with_dite_tailrec.induct (motive : Nat → Prop)
 -/
 #guard_msgs in
 #check with_dite_tailrec.induct
+
+
+def with_overlap : Nat → Nat
+  | 0 => 0
+  | 1 => 1
+  | 2 => 2
+  | 3 => 3
+  | n+1 => with_overlap n
+termination_by with_overlap n => n
+#derive_induction with_overlap
+
+/--
+info: with_overlap.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : motive 1) (case3 : motive 2) (case4 : motive 3)
+  (case5 : ∀ (n : Nat), (n = 0 → False) → (n = 1 → False) → (n = 2 → False) → motive n → motive (Nat.succ n))
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check with_overlap.induct

@@ -7,10 +7,12 @@ open Lean Elab Command Meta
 -- #check WellFounded.fixF
 
 def lambda1NoContext {α} (e : Expr) (k : FVarId → Expr →  MetaM α) : MetaM α := do
-  lambdaTelescope e fun args body => do
-    let #[param] := args | unreachable!
-    mapMetaM (withReader (fun ctx => { ctx with lctx := ctx.lctx.erase param.fvarId! })) do
-      k param.fvarId! body
+  let .lam n d b bi := ← whnfD e | throwError "lambda1NoContext: expected lambda, got {e}"
+  -- let fvarId ← mkFreshFVarId
+  withLocalDecl n bi d fun x => do
+    let b := b.instantiate1 x
+    mapMetaM (withReader (fun ctx => { ctx with lctx := ctx.lctx.erase x.fvarId! })) do
+      k x.fvarId! b
 
 def mapWriter {σ α m} [Monad m] (f : σ → m σ) (k : StateT (Array σ) m α) : StateT (Array σ) m α := do
   fun s₁ => do
@@ -136,7 +138,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
 
   if let some matcherApp ← matchMatcherApp? e then
     -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
-    if matcherApp.remaining.size > 0 && matcherApp.remaining[0]!.isFVarOf oldIH then
+    if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
       let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
         unless motiveArgs.size == matcherApp.discrs.size do
           throwError "unexpected matcher application, motive must be lambda expression with #{matcherApp.discrs.size} arguments"
@@ -164,7 +166,10 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
           let uElim ← getLevel goal -- TODO: Double check
           pure <| matcherApp.matcherLevels.set! pos uElim
 
-      let aux := mkAppN (mkConst matcherApp.matcherName matcherLevels.toList) matcherApp.params
+      let matchEqns ← Match.getEquationsFor matcherApp.matcherName
+      let splitter := matchEqns.splitterName
+
+      let aux := mkAppN (mkConst splitter matcherLevels.toList) matcherApp.params
       let aux := mkApp aux motive'
       let aux := mkAppN aux matcherApp.discrs
       unless (← isTypeCorrect aux) do
@@ -172,10 +177,14 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       let mut auxType ← inferType aux
 
       let mut alts' := #[]
-      for alt in matcherApp.alts, numParams in matcherApp.altNumParams do
+      for alt in matcherApp.alts,
+          numParams in matcherApp.altNumParams,
+          splitterNumParams in matchEqns.splitterAltNumParams do
         let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
-        let alt' ← forallBoundedTelescope d (some numParams) fun xs d => do
-          let alt ← try instantiateLambda alt xs catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
+        let alt' ← forallBoundedTelescope d (some splitterNumParams) fun xs d => do
+          -- Here we assume that the splitter's alternatives parameters are an _extension_
+          -- of the matcher's alternative parameters.
+          let alt ← try instantiateLambda alt xs[:numParams] catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
           let alt' ← lambda1NoContext alt fun oldIH' alt => do
             let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
               let #[newIH'] := newIH' | unreachable!
@@ -187,6 +196,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
         auxType := b.instantiate1 alt'
         alts' := alts'.push alt'
       let matcherApp' := { matcherApp with
+        matcherName   := splitter,
         matcherLevels := matcherLevels,
         motive        := motive',
         alts          := alts',
