@@ -6,13 +6,14 @@ open Lean Elab Command Meta
 
 -- #check WellFounded.fixF
 
-def lambda1NoContext {α} (e : Expr) (k : FVarId → Expr →  MetaM α) : MetaM α := do
-  let .lam n d b bi := ← whnfD e | throwError "lambda1NoContext: expected lambda, got {e}"
-  -- let fvarId ← mkFreshFVarId
-  withLocalDecl n bi d fun x => do
-    let b := b.instantiate1 x
-    mapMetaM (withReader (fun ctx => { ctx with lctx := ctx.lctx.erase x.fvarId! })) do
-      k x.fvarId! b
+/-- Opens the body of a lambda, _without_ putting the free variable into the local context.
+This is used when replacing that paramters with a different expression.
+-/
+def removeLamda {α} (e : Expr) (k : FVarId → Expr →  MetaM α) : MetaM α := do
+  let .lam _n _d b _bi := ← whnfD e | throwError "removeLamda: expected lambda, got {e}"
+  let x ← mkFreshFVarId
+  let b := b.instantiate1 (.fvar x)
+  k x b
 
 def mapWriter {σ α m} [Monad m] (f : σ → m σ) (k : StateT (Array σ) m α) : StateT (Array σ) m α := do
   fun s₁ => do
@@ -187,7 +188,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
           -- Here we assume that the splitter's alternatives parameters are an _extension_
           -- of the matcher's alternative parameters.
           let alt ← try instantiateLambda alt xs[:numParams] catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
-          let alt' ← lambda1NoContext alt fun oldIH' alt => do
+          let alt' ← removeLamda alt fun oldIH' alt => do
             let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
               let #[newIH'] := newIH' | unreachable!
               -- logInfo m!"goal': {goal'}"
@@ -272,9 +273,9 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
         let #[param, genIH] := xs | unreachable!
         -- open body with the same arg
         let body ← instantiateLambda body #[param]
-        lambda1NoContext body fun oldIH body => do
-            let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] (.app motive param) oldIH genIH.fvarId! body
-            mkLambdaFVars #[param, genIH] body'
+        removeLamda body fun oldIH body => do
+          let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] (.app motive param) oldIH genIH.fvarId! body
+          mkLambdaFVars #[param, genIH] body'
 
       let e' := mkAppN e' #[body', arg, acc]
 

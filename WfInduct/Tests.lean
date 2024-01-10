@@ -119,6 +119,7 @@ info: with_ite_tailrec.induct (motive : Nat → Prop) (case1 : motive 0)
 #guard_msgs in
 #check with_ite_tailrec.induct
 
+
 set_option linter.unusedVariables false in
 def with_ite_non_tailrec : Nat → Nat
   | 0 => 0
@@ -174,6 +175,41 @@ info: with_dite_tailrec.induct (motive : Nat → Prop)
 #guard_msgs in
 #check with_dite_tailrec.induct
 
+set_option linter.unusedVariables false in
+def with_match_tailrec : Nat → Nat
+  | 0 => 0
+  | n+1 =>
+    match n % 2 with
+    | 0 => with_match_tailrec n
+    | _ => with_match_tailrec n
+termination_by with_match_tailrec n => n
+#derive_induction with_match_tailrec
+
+/--
+info: with_match_tailrec.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : ∀ (n : Nat), motive n → motive (Nat.succ n))
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check with_match_tailrec.induct
+
+
+set_option linter.unusedVariables false in
+def with_match_non_tailrec : Nat → Nat
+  | 0 => 0
+  | n+1 =>
+  Nat.succ <|
+    match n % 2 with
+    | 0 => with_match_non_tailrec n
+    | _ => with_match_non_tailrec n
+termination_by with_match_non_tailrec n => n
+#derive_induction with_match_non_tailrec
+
+/--
+info: with_match_non_tailrec.induct (motive : Nat → Prop) (case1 : motive 0)
+  (case2 : ∀ (n : Nat), motive n → motive (Nat.succ n)) (x : Nat) : motive x
+-/
+#guard_msgs in
+#check with_match_non_tailrec.induct
 
 def with_overlap : Nat → Nat
   | 0 => 0
