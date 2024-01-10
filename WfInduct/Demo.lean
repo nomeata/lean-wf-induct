@@ -14,7 +14,7 @@ termination_by ackermann p => p
 /--
 info: ackermann.induct (motive : Nat × Nat → Prop) (case1 : ∀ (m : Nat), motive (0, m))
   (case2 : ∀ (n : Nat), motive (n, 1) → motive (Nat.succ n, 0))
-  (case3 : ∀ (n m : Nat), motive (n, ackermann (n + 1, m)) → motive (n + 1, m) → motive (Nat.succ n, Nat.succ m))
+  (case3 : ∀ (n m : Nat), motive (n + 1, m) → motive (n, ackermann (n + 1, m)) → motive (Nat.succ n, Nat.succ m))
   (x : Nat × Nat) : motive x
 -/
 #guard_msgs in

@@ -12,7 +12,7 @@ termination_by ackermann p => p
 /--
 info: ackermann.induct (motive : Nat × Nat → Prop) (case1 : ∀ (m : Nat), motive (0, m))
   (case2 : ∀ (n : Nat), motive (n, 1) → motive (Nat.succ n, 0))
-  (case3 : ∀ (n m : Nat), motive (n, ackermann (n + 1, m)) → motive (n + 1, m) → motive (Nat.succ n, Nat.succ m))
+  (case3 : ∀ (n m : Nat), motive (n + 1, m) → motive (n, ackermann (n + 1, m)) → motive (Nat.succ n, Nat.succ m))
   (x : Nat × Nat) : motive x
 -/
 #guard_msgs in
@@ -32,6 +32,21 @@ info: Tree.rev.induct (motive : Tree → Prop)
 -/
 #guard_msgs in
 #check Tree.rev.induct
+
+
+def fib : Nat → Nat
+  | 0 => 1
+  | 1 => 1
+  | n+2 => fib n + fib (n+1)
+termination_by fib n => n
+
+#derive_induction fib
+/--
+info: fib.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : motive 1)
+  (case3 : ∀ (n : Nat), motive n → motive (n + 1) → motive (Nat.succ (Nat.succ n))) (x : Nat) : motive x
+-/
+#guard_msgs in
+#check fib.induct
 
 set_option linter.unusedVariables false in
 def have_tailrec : Nat → Nat
@@ -135,7 +150,7 @@ termination_by with_ite_non_tailrec n => n
 
 /--
 info: with_ite_non_tailrec.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : motive 1)
-  (case3 : ∀ (n : Nat), motive n → motive (n + 1) → motive (Nat.succ (Nat.succ n))) (x : Nat) : motive x
+  (case3 : ∀ (n : Nat), motive (n + 1) → motive n → motive (Nat.succ (Nat.succ n))) (x : Nat) : motive x
 -/
 #guard_msgs in
 #check with_ite_non_tailrec.induct

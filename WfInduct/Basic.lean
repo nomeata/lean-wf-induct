@@ -91,7 +91,7 @@ def deduplicateIHs (vals : Array Expr) : MetaM (Array Expr) := do
 
 def assertIHs (vals : Array Expr) (mvarid : MVarId) : MetaM MVarId := do
   let mut mvarid := mvarid
-  for v in vals, i in [0:vals.size] do
+  for v in vals.reverse, i in [0:vals.size] do
     mvarid ← mvarid.assert s!"IH{i+1}" (← inferType v) v
   return mvarid
 
