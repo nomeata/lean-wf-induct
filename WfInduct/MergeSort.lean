@@ -46,10 +46,9 @@ theorem merge.induct3 {α : Type uu} (r : α → α → Prop) (motive : (r : α 
 -- just a warmup
 theorem perm_length (l : List α × List α) : (merge r l).length = l.1.length + l.2.length := by
   induction l using merge.induct
-  case r x y => exact r x y -- TODO: Fix this
+  case r x y => exact r x y -- TODO: Allow merge.induct (r := r)
   case case1 => simp [merge]
-  case case2 => simp [merge]
-  -- TODO: Should this be split?
+  case case2 => simp [merge] -- NB: ¬ (l = []) is provided, and used by simp
   case case3 a l b l' hr IH =>
     simp [merge, hr, IH]
     simp_arith
