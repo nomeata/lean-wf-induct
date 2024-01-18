@@ -5,7 +5,7 @@ def ackermann : (Nat × Nat) → Nat
   | (0, m) => m + 1
   | (n+1, 0) => ackermann (n, 1)
   | (n+1, m+1) => ackermann (n, ackermann (n + 1, m))
-termination_by ackermann p => p
+termination_by p => p
 
 #derive_induction ackermann
 
@@ -38,7 +38,7 @@ def fib : Nat → Nat
   | 0 => 1
   | 1 => 1
   | n+2 => fib n + fib (n+1)
-termination_by fib n => n
+termination_by n => n
 
 #derive_induction fib
 /--
@@ -54,7 +54,7 @@ def have_tailrec : Nat → Nat
   | n+1 =>
     have h2 : n < n+1 := Nat.lt_succ_self n
     have_tailrec n
-termination_by have_tailrec n => n
+termination_by n => n
 #derive_induction have_tailrec
 
 /--
@@ -71,7 +71,7 @@ def have_non_tailrec : Nat → Nat
     Nat.succ <|
       have h2 : n < n+1 := Nat.lt_succ_self n
       have_non_tailrec n
-termination_by have_non_tailrec n => n
+termination_by n => n
 #derive_induction have_non_tailrec
 
 /--
@@ -87,7 +87,7 @@ def let_tailrec : Nat → Nat
   | n+1 =>
     let h2 : n < n+1 := Nat.lt_succ_self n
     let_tailrec n
-termination_by let_tailrec n => n
+termination_by n => n
 #derive_induction let_tailrec
 
 /--
@@ -104,7 +104,7 @@ def let_non_tailrec : Nat → Nat
     Nat.succ <|
       let h2 : n < n+1 := Nat.lt_succ_self n
       let_non_tailrec n
-termination_by let_non_tailrec n => n
+termination_by n => n
 #derive_induction let_non_tailrec
 
 /--
@@ -123,7 +123,7 @@ def with_ite_tailrec : Nat → Nat
       with_ite_tailrec n
     else
       with_ite_tailrec n
-termination_by with_ite_tailrec n => n
+termination_by n => n
 #derive_induction with_ite_tailrec
 
 /--
@@ -145,7 +145,7 @@ def with_ite_non_tailrec : Nat → Nat
         with_ite_non_tailrec (n+1)
       else
         with_ite_non_tailrec n
-termination_by with_ite_non_tailrec n => n
+termination_by n => n
 #derive_induction with_ite_non_tailrec
 
 /--
@@ -162,7 +162,7 @@ def with_dite_non_tailrec (n : Nat) : Nat :=
       with_dite_non_tailrec (n-1)
     else
       0
-termination_by with_dite_non_tailrec n => n
+termination_by n
 #derive_induction with_dite_non_tailrec
 
 /--
@@ -179,7 +179,7 @@ def with_dite_tailrec (n : Nat) : Nat :=
       with_dite_tailrec (n-1)
     else
       0
-termination_by with_dite_tailrec n => n
+termination_by n
 #derive_induction with_dite_tailrec
 
 /--
@@ -197,7 +197,7 @@ def with_match_tailrec : Nat → Nat
     match n % 2 with
     | 0 => with_match_tailrec n
     | _ => with_match_tailrec n
-termination_by with_match_tailrec n => n
+termination_by n => n
 #derive_induction with_match_tailrec
 
 /--
@@ -216,7 +216,7 @@ def with_match_non_tailrec : Nat → Nat
     match n % 2 with
     | 0 => with_match_non_tailrec n
     | _ => with_match_non_tailrec n
-termination_by with_match_non_tailrec n => n
+termination_by n => n
 #derive_induction with_match_non_tailrec
 
 /--
@@ -232,7 +232,7 @@ def with_overlap : Nat → Nat
   | 2 => 2
   | 3 => 3
   | n+1 => with_overlap n
-termination_by with_overlap n => n
+termination_by n => n
 #derive_induction with_overlap
 
 /--

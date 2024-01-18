@@ -9,14 +9,13 @@ def merge (r : α → α → Bool) : List α × List α → List α
   | ([], l') => l'
   | (l, []) => l
   | (a :: l, b :: l') => if r a b then a :: merge r (l, b :: l') else b :: merge r (a :: l, l')
-  termination_by merge r l => l.1.length + l.2.length
+  termination_by l => l.1.length + l.2.length
 
 -- set_option pp.raw true
 -- set_option pp.proofs.withType false
 
 #derive_induction merge
 #check merge.induct
-
 
 /-
 theorem merge.induct1 {α : Type uu} (r : α → α → Prop) [DecidableRel r] (motive : List α × List α → Prop)
@@ -45,8 +44,7 @@ theorem merge.induct3 {α : Type uu} (r : α → α → Prop) (motive : (r : α 
 
 -- just a warmup
 theorem perm_length (l : List α × List α) : (merge r l).length = l.1.length + l.2.length := by
-  induction l using merge.induct
-  case r x y => exact r x y -- TODO: Allow merge.induct (r := r)
+  induction l using merge.induct (r := r) -- NB: Needs lean4#3188
   case case1 => simp [merge]
   case case2 => simp [merge] -- NB: ¬ (l = []) is provided, and used by simp
   case case3 a l b l' hr IH =>
@@ -63,11 +61,11 @@ end Unary
 
 namespace Binary
 
-def merge (r : α → α → Bool): List α → List α → List α
+def merge (r : α → α → Bool) : List α → List α → List α
   | [], l' => l'
   | l, [] => l
   | a :: l, b :: l' => if r a b then a :: merge r l (b :: l') else b :: merge r (a :: l) l'
-  termination_by merge r l₁ l₂ => l₁.length + l₂.length
+  termination_by l₁ l₂ => l₁.length + l₂.length
 -- #derive_induction merge._unary
 
 end Binary

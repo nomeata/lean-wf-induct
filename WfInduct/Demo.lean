@@ -8,7 +8,7 @@ def ackermann : (Nat × Nat) → Nat
   | (0, m) => m + 1
   | (n+1, 0) => ackermann (n, 1)
   | (n+1, m+1) => ackermann (n, ackermann (n + 1, m))
-termination_by ackermann p => p
+termination_by p => p
 #derive_induction ackermann
 
 /--

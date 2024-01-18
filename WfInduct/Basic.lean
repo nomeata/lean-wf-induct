@@ -73,7 +73,7 @@ def withLetDecls {α} (vals : Array Expr) (k : Array FVarId → MetaM α) (i : N
       withLetDecls vals (fun args => k (args.push a.fvarId!)) (i + 1)
   else
     k #[]
-termination_by _ vals k i => vals.size - i
+termination_by vals.size - i
 
 -- Because of term duplications we might encounter the same IH multiple times.
 -- We deduplicate them (by type, not proof term) here.
