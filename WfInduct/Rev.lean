@@ -10,6 +10,12 @@ termination_by arr.size - i
 decreasing_by simp_wf; omega
 
 theorem size_rev {α} (arr : Array α) (i : Nat) : (rev arr i).size = arr.size := by
+  /-
+  if h : i < arr.size / 2 then
+    -- can we unfold nicely here?
+  else
+    done
+  -/
   unfold rev
   split
   · rw [size_rev _ _] -- fix for that in #3204
