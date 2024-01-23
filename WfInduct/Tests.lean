@@ -1,6 +1,8 @@
 import WfInduct.Basic
 import Std.Tactic.GuardMsgs
 
+namespace Unary
+
 def ackermann : (Nat × Nat) → Nat
   | (0, m) => m + 1
   | (n+1, 0) => ackermann (n, 1)
@@ -10,13 +12,35 @@ termination_by p => p
 #derive_induction ackermann
 
 /--
-info: ackermann.induct (motive : Nat × Nat → Prop) (case1 : ∀ (m : Nat), motive (0, m))
+info: Unary.ackermann.induct (motive : Nat × Nat → Prop) (case1 : ∀ (m : Nat), motive (0, m))
   (case2 : ∀ (n : Nat), motive (n, 1) → motive (Nat.succ n, 0))
   (case3 : ∀ (n m : Nat), motive (n + 1, m) → motive (n, ackermann (n + 1, m)) → motive (Nat.succ n, Nat.succ m))
   (x : Nat × Nat) : motive x
 -/
 #guard_msgs in
 #check ackermann.induct
+
+end Unary
+
+namespace Binary
+
+def ackermann : Nat → Nat → Nat
+  | 0, m => m + 1
+  | n+1, 0 => ackermann n 1
+  | n+1, m+1 => ackermann n (ackermann (n + 1) m)
+termination_by n m => (n, m)
+#derive_induction ackermann
+
+/--
+info: Binary.ackermann.induct (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), motive 0 m)
+  (case2 : ∀ (n : Nat), motive n 1 → motive (Nat.succ n) 0)
+  (case3 : ∀ (n m : Nat), motive (n + 1) m → motive n (ackermann (n + 1) m) → motive (Nat.succ n) (Nat.succ m))
+  (x✝x✝¹ : Nat) : motive x✝ x✝¹
+-/
+#guard_msgs in
+#check ackermann.induct
+
+end Binary
 
 universe u
 opaque _root_.List.attach : {α : Type u} → (l : List α) → List { x // x ∈ l }

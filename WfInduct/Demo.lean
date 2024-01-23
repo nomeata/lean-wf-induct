@@ -4,18 +4,18 @@ import Std.Tactic.GuardMsgs
 
 set_option autoImplicit false
 
-def ackermann : (Nat × Nat) → Nat
-  | (0, m) => m + 1
-  | (n+1, 0) => ackermann (n, 1)
-  | (n+1, m+1) => ackermann (n, ackermann (n + 1, m))
-termination_by p => p
+def ackermann : Nat → Nat → Nat
+  | 0, m => m + 1
+  | n+1, 0 => ackermann n 1
+  | n+1, m+1 => ackermann n (ackermann (n + 1) m)
+termination_by n m => (n, m)
 #derive_induction ackermann
 
 /--
-info: ackermann.induct (motive : Nat × Nat → Prop) (case1 : ∀ (m : Nat), motive (0, m))
-  (case2 : ∀ (n : Nat), motive (n, 1) → motive (Nat.succ n, 0))
-  (case3 : ∀ (n m : Nat), motive (n + 1, m) → motive (n, ackermann (n + 1, m)) → motive (Nat.succ n, Nat.succ m))
-  (x : Nat × Nat) : motive x
+info: ackermann.induct (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), motive 0 m)
+  (case2 : ∀ (n : Nat), motive n 1 → motive (Nat.succ n) 0)
+  (case3 : ∀ (n m : Nat), motive (n + 1) m → motive n (ackermann (n + 1) m) → motive (Nat.succ n) (Nat.succ m))
+  (x✝x✝¹ : Nat) : motive x✝ x✝¹
 -/
 #guard_msgs in
 #check ackermann.induct
