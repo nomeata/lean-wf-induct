@@ -24,4 +24,6 @@ theorem size_rev {α} (arr : Array α) (i : Nat) : (rev arr i).size = arr.size :
 termination_by arr.size - i
 decreasing_by simp_wf; omega
 
--- #derive_induction size_rev._unary
+#derive_induction rev._unary
+
+#check rev._unary.induct
