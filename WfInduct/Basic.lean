@@ -373,9 +373,15 @@ def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermE
   let ci ← getConstInfoDefn name
   let unaryInductCI ← getConstInfo unaryInductName
   let us := unaryInductCI.levelParams
-  let value ← lambdaTelescope ci.value fun xs body => do
-    unless xs.size > eqnInfo.fixedPrefixSize + 1 do
-      throwError "Unexpected lambda arity in body of {name}"
+  -- We determine the arity based on the value, not the type, like the WF translation does
+  -- But we get the parameters from the type, because they have better names there
+  let arity ← lambdaTelescope ci.value fun xs _body => pure xs.size
+  unless arity > eqnInfo.fixedPrefixSize + 1 do
+    throwError "Unexpected lambda arity in body of {name}"
+  let value ← forallBoundedTelescope ci.type arity fun xs _ => do
+    unless arity = xs.size do
+      throwError "Not enough foralls in type of {name}"
+    let body := ci.value.beta xs
     let fixedParams : Array Expr := xs[:eqnInfo.fixedPrefixSize]
     let targetParams : Array Expr := xs[eqnInfo.fixedPrefixSize:]
 
@@ -401,13 +407,13 @@ def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermE
 
     let elimInfo ← getElimExprInfo unaryInductConst
     -- We assume the eliminator created by deriveUnaryInduction
-    -- has parameters, motive, alts, target in that order
+    -- has fixed prefix and motive in the beginning and target at the end
     unless elimInfo.motivePos = eqnInfo.fixedPrefixSize do
         throwError "unary induction principle does not start with fixed prefix"
     let #[targetPos] := elimInfo.targetsPos
       | throwError "unary induction has more than one target pos?"
-    unless targetPos = elimInfo.motivePos + 1 + elimInfo.altsInfo.size do
-      throwError "unary induction has target not at the end?"
+    -- unless targetPos = elimInfo.motivePos + 1 + elimInfo.altsInfo.size do
+    --  throwError "unary induction has target not at the end?"
 
     let unaryElimType ← instantiateForall elimInfo.elimType xs[:eqnInfo.fixedPrefixSize]
 
@@ -427,7 +433,8 @@ def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermE
         mkLambdaFVars #[packed] (← mkPSigmaCasesOn packed codomain targetParams value)
     let unaryElimType ← instantiateForall unaryElimType #[unaryMotive]
 
-    forallBoundedTelescope unaryElimType (elimInfo.altsInfo.size) fun alts _unaryElimType => do
+    let remaining_alts : Nat := targetPos - eqnInfo.fixedPrefixSize - 1
+    forallBoundedTelescope unaryElimType remaining_alts fun alts _unaryElimType => do
         let value := elimInfo.elimExpr
         let value := mkAppN value fixedParams
         let value := mkApp value unaryMotive
