@@ -365,110 +365,114 @@ def deriveUnaryInduction (name : Name) : TermElabM Name := do
       }
       return inductName
 
+def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermElabM Unit := do
+  if eqnInfo.declNames.size > 1 then
+    throwError "Mutual recursion not supported"
+  let name := eqnInfo.declNames[0]!
+
+  let ci ← getConstInfoDefn name
+  let unaryInductCI ← getConstInfo unaryInductName
+  let us := unaryInductCI.levelParams
+  let value ← lambdaTelescope ci.value fun xs body => do
+    unless xs.size > eqnInfo.fixedPrefixSize + 1 do
+      throwError "Unexpected lambda arity in body of {name}"
+    let fixedParams : Array Expr := xs[:eqnInfo.fixedPrefixSize]
+    let targetParams : Array Expr := xs[eqnInfo.fixedPrefixSize:]
+
+    let packedArg ← body.withApp fun f args => do
+      unless f.isConstOf eqnInfo.declNameNonRec do
+        throwError "{name} is not defined via {eqnInfo.declNameNonRec}, but {f}"
+      unless args.size = eqnInfo.fixedPrefixSize + 1 do
+        throwError "unexpected number of parameters to {eqnInfo.declNameNonRec} "
+      -- unless args.pop = fixedParams do
+      --  throwErrorAt ident "unexpected number of parameters to {eqnInfo.declNameNonRec} "
+      return args.back
+
+    let naryConst := mkConst name (us.map mkLevelParam)
+    let unaryInductConst := mkConst unaryInductName (us.map mkLevelParam)
+
+    -- A dsimp lemma that folds applications of the unary function back to the nary
+    let foldLemma ← do
+      let type ← mkEq body (mkAppN naryConst xs)
+      mkLambdaFVars xs (← mkExpectedTypeHint (← mkEqRefl body) type)
+
+    -- let isRefl ← isRflProof foldLemma
+    -- logInfo m!"{← inferType foldLemma}"
+
+    let elimInfo ← getElimExprInfo unaryInductConst
+    -- We assume the eliminator created by deriveUnaryInduction
+    -- has parameters, motive, alts, target in that order
+    unless elimInfo.motivePos = eqnInfo.fixedPrefixSize do
+        throwError "unary induction principle does not start with fixed prefix"
+    let #[targetPos] := elimInfo.targetsPos
+      | throwError "unary induction has more than one target pos?"
+    unless targetPos = elimInfo.motivePos + 1 + elimInfo.altsInfo.size do
+      throwError "unary induction has target not at the end?"
+
+    let unaryElimType ← instantiateForall elimInfo.elimType xs[:eqnInfo.fixedPrefixSize]
+
+    let motiveType ← mkForallFVars targetParams (.sort levelZero)
+    withLocalDecl `motive .default motiveType fun motive => do
+
+    let packedDomain ← id do -- TODO: Expose in PackDomain
+        let mut d ← inferType targetParams.back
+        for x in targetParams.pop.reverse do
+          d ← mkAppOptM ``PSigma #[some (← inferType x), some (← mkLambdaFVars #[x] d)]
+        return d
+
+    let unaryMotive ← do
+      withLocalDecl `x .default packedDomain fun packed => do
+        let codomain := .sort levelZero
+          let value := mkAppN motive targetParams
+        mkLambdaFVars #[packed] (← mkPSigmaCasesOn packed codomain targetParams value)
+    let unaryElimType ← instantiateForall unaryElimType #[unaryMotive]
+
+    forallBoundedTelescope unaryElimType (elimInfo.altsInfo.size) fun alts _unaryElimType => do
+        let value := elimInfo.elimExpr
+        let value := mkAppN value fixedParams
+        let value := mkApp value unaryMotive
+        let value := mkAppN value alts
+        let value := mkApp value packedArg
+        let value ← mkLambdaFVars targetParams value
+        let value ← mkLambdaFVars alts value
+        let value ← mkLambdaFVars #[motive] value
+        let value ← mkLambdaFVars fixedParams value
+        -- This dsimp application will nicely resolve all PSigma.casesOn redexes
+        -- TODO: The foldLemma is not considered refl, so we use simp and throw away
+        -- the proof. Needs to be cleaned up
+        let (result, _) ← simp (← inferType value) {
+            config := {
+              -- Empirically determinied minially required simp options
+              beta := true
+              iota := true
+              zeta := false
+              eta := false
+              etaStruct := .none
+              proj := false
+            }
+            simpTheorems := (← SimpTheoremsArray.addTheorem {} (.decl name) foldLemma)
+        }
+        let value ← mkExpectedTypeHint value result.expr
+        return value
+
+  let inductName := .append name `induct
+  -- logInfo m!"Final {value}"
+  check value
+  addDecl <| Declaration.defnDecl {
+    name := inductName,
+    levelParams := us,
+    type := (← inferType value),
+    value := value,
+    hints := ReducibilityHints.regular 0
+    safety := DefinitionSafety.safe
+}
+
 elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let [name] ← resolveGlobalConst ident
     | throwErrorAt ident m!"ambiguous identifier"
   if let some eqnInfo := WF.eqnInfoExt.find? (← getEnv) name then
-    if eqnInfo.declNames.size > 1 then
-      throwErrorAt ident "Mutual recursion not supported"
-
     let unaryInductName ← deriveUnaryInduction eqnInfo.declNameNonRec
-    if eqnInfo.declNameNonRec != name then
-      let ci ← getConstInfoDefn name
-      let unaryInductCI ← getConstInfo unaryInductName
-      let us := unaryInductCI.levelParams
-      let value ← lambdaTelescope ci.value fun xs body => do
-        unless xs.size > eqnInfo.fixedPrefixSize + 1 do
-          throwErrorAt ident "Unexpected lambda arity in body of {name}"
-        let fixedParams : Array Expr := xs[:eqnInfo.fixedPrefixSize]
-        let targetParams : Array Expr := xs[eqnInfo.fixedPrefixSize:]
-
-        let packedArg ← body.withApp fun f args => do
-          unless f.isConstOf eqnInfo.declNameNonRec do
-            throwErrorAt ident "{name} is not defined via {eqnInfo.declNameNonRec}, but {f}"
-          unless args.size = eqnInfo.fixedPrefixSize + 1 do
-            throwErrorAt ident "unexpected number of parameters to {eqnInfo.declNameNonRec} "
-          -- unless args.pop = fixedParams do
-          --  throwErrorAt ident "unexpected number of parameters to {eqnInfo.declNameNonRec} "
-          return args.back
-
-        let naryConst := mkConst name (us.map mkLevelParam)
-        let unaryInductConst := mkConst unaryInductName (us.map mkLevelParam)
-
-        -- A dsimp lemma that folds applications of the unary function back to the nary
-        let foldLemma ← do
-          let type ← mkEq body (mkAppN naryConst xs)
-          mkLambdaFVars xs (← mkExpectedTypeHint (← mkEqRefl body) type)
-
-        -- let isRefl ← isRflProof foldLemma
-        -- logInfo m!"{← inferType foldLemma}"
-
-        let elimInfo ← getElimExprInfo unaryInductConst
-        -- We assume the eliminator created by deriveUnaryInduction
-        -- has parameters, motive, alts, target in that order
-        unless elimInfo.motivePos = eqnInfo.fixedPrefixSize do
-            throwErrorAt ident "unary induction principle does not start with fixed prefix"
-        let #[targetPos] := elimInfo.targetsPos
-          | throwErrorAt ident "unary induction has more than one target pos?"
-        unless targetPos = elimInfo.motivePos + 1 + elimInfo.altsInfo.size do
-          throwErrorAt ident "unary induction has target not at the end?"
-
-        let unaryElimType ← instantiateForall elimInfo.elimType xs[:eqnInfo.fixedPrefixSize]
-
-        let motiveType ← mkForallFVars targetParams (.sort levelZero)
-        withLocalDecl `motive .default motiveType fun motive => do
-
-        let packedDomain ← id do -- TODO: Expose in PackDomain
-            let mut d ← inferType targetParams.back
-            for x in targetParams.pop.reverse do
-              d ← mkAppOptM ``PSigma #[some (← inferType x), some (← mkLambdaFVars #[x] d)]
-            return d
-
-        let unaryMotive ← do
-          withLocalDecl `x .default packedDomain fun packed => do
-            let codomain := .sort levelZero
-              let value := mkAppN motive targetParams
-            mkLambdaFVars #[packed] (← mkPSigmaCasesOn packed codomain targetParams value)
-        let unaryElimType ← instantiateForall unaryElimType #[unaryMotive]
-
-        forallBoundedTelescope unaryElimType (elimInfo.altsInfo.size) fun alts _unaryElimType => do
-            let value := elimInfo.elimExpr
-            let value := mkAppN value fixedParams
-            let value := mkApp value unaryMotive
-            let value := mkAppN value alts
-            let value := mkApp value packedArg
-            let value ← mkLambdaFVars targetParams value
-            let value ← mkLambdaFVars alts value
-            let value ← mkLambdaFVars #[motive] value
-            let value ← mkLambdaFVars fixedParams value
-            -- This dsimp application will nicely resolve all PSigma.casesOn redexes
-            -- TODO: The foldLemma is not considered refl, so we use simp and throw away
-            -- the proof. Needs to be cleaned up
-            let (result, _) ← simp (← inferType value) {
-                config := {
-                  -- Empirically determinied minially required simp options
-                  beta := true
-                  iota := true
-                  zeta := false
-                  eta := false
-                  etaStruct := .none
-                  proj := false
-                }
-                simpTheorems := (← SimpTheoremsArray.addTheorem {} (.decl name) foldLemma)
-            }
-            let value ← mkExpectedTypeHint value result.expr
-            return value
-
-      let inductName := .append name `induct
-      -- logInfo m!"Final {value}"
-      check value
-      addDecl <| Declaration.defnDecl {
-        name := inductName,
-        levelParams := us,
-        type := (← inferType value),
-        value := value,
-        hints := ReducibilityHints.regular 0
-        safety := DefinitionSafety.safe
-    }
+    unless eqnInfo.declNameNonRec = name do
+      deriveBinaryInduction eqnInfo unaryInductName
   else
     _ ← deriveUnaryInduction name
