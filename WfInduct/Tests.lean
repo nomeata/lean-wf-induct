@@ -266,3 +266,34 @@ info: with_overlap.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : mo
 -/
 #guard_msgs in
 #check with_overlap.induct
+
+
+namespace UnusedExtraParams
+
+def unary (base : Nat) : Nat → Nat
+  | 0 => base
+  | n+1 => unary base n
+termination_by n => n
+#derive_induction unary
+
+/--
+info: UnusedExtraParams.unary.induct (base : Nat) (motive : Nat → Prop) (case1 : motive 0)
+  (case2 : ∀ (n : Nat), motive n → motive (Nat.succ n)) (x : Nat) : motive x
+-/
+#guard_msgs in
+#check unary.induct
+
+def binary (base : Nat) : Nat → Nat → Nat
+  | 0, m => base + m
+  | n+1, m => binary base n m
+termination_by n => n
+#derive_induction binary
+
+/--
+info: UnusedExtraParams.binary.induct (base : Nat) (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), motive 0 m)
+  (case2 : ∀ (n m : Nat), motive n m → motive (Nat.succ n) m) (a✝a✝¹ : Nat) : motive a✝ a✝¹
+-/
+#guard_msgs in
+#check binary.induct
+
+end UnusedExtraParams

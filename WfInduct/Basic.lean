@@ -412,7 +412,7 @@ def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermE
   let value ← forallBoundedTelescope ci.type arity fun xs _ => do
     unless arity = xs.size do
       throwError "Not enough foralls in type of {name}"
-    let body := ci.value.beta xs
+    let body ← instantiateLambda ci.value xs
     let fixedParams : Array Expr := xs[:eqnInfo.fixedPrefixSize]
     let targetParams : Array Expr := xs[eqnInfo.fixedPrefixSize:]
 
