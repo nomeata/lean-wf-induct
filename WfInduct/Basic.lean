@@ -365,6 +365,37 @@ def deriveUnaryInduction (name : Name) : TermElabM Name := do
       }
       return inductName
 
+/--
+In the type of `value`, reduce
+* `PSigma.casesOn (PSigma.mk a b) (fun x y => k x y)  -->  k a b`
+* `foo._unary (PSigma.mk a b) (fun x y => k x y)      -->  foo a b`
+and then wrap `e` in an appropriate type hint.
+-/
+def cleanPackedArgs (eqnInfo : WF.EqnInfo) (value : Expr) : MetaM Expr := do
+  -- TODO: This implementation is a bit haphazard.
+  -- Simply use Meta.transform instead.
+  let name := eqnInfo.declNames[0]!
+  let foldLemma ← do
+    let ci ← getConstInfoDefn name
+    let us := ci.levelParams
+    let naryConst := mkConst name (us.map mkLevelParam)
+    lambdaTelescope ci.value fun xs body => do
+      let type ← mkEq body (mkAppN naryConst xs)
+      mkLambdaFVars xs (← mkExpectedTypeHint (← mkEqRefl body) type)
+  let (result, _) ← simp (← inferType value) {
+      config := {
+        -- Empirically determinied minially required simp options
+        beta := true
+        iota := true
+        zeta := false
+        eta := false
+        etaStruct := .none
+        proj := false
+      }
+      simpTheorems := (← SimpTheoremsArray.addTheorem {} (.decl name) foldLemma)
+  }
+  mkExpectedTypeHint value result.expr
+
 def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermElabM Unit := do
   if eqnInfo.declNames.size > 1 then
     throwError "Mutual recursion not supported"
@@ -394,18 +425,7 @@ def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermE
       --  throwErrorAt ident "unexpected number of parameters to {eqnInfo.declNameNonRec} "
       return args.back
 
-    let naryConst := mkConst name (us.map mkLevelParam)
-    let unaryInductConst := mkConst unaryInductName (us.map mkLevelParam)
-
-    -- A dsimp lemma that folds applications of the unary function back to the nary
-    let foldLemma ← do
-      let type ← mkEq body (mkAppN naryConst xs)
-      mkLambdaFVars xs (← mkExpectedTypeHint (← mkEqRefl body) type)
-
-    -- let isRefl ← isRflProof foldLemma
-    -- logInfo m!"{← inferType foldLemma}"
-
-    let elimInfo ← getElimExprInfo unaryInductConst
+    let elimInfo ← getElimExprInfo (mkConst unaryInductName (us.map mkLevelParam))
     -- We assume the eliminator created by deriveUnaryInduction
     -- has fixed prefix and motive in the beginning and target at the end
     unless elimInfo.motivePos = eqnInfo.fixedPrefixSize do
@@ -444,22 +464,7 @@ def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermE
         let value ← mkLambdaFVars alts value
         let value ← mkLambdaFVars #[motive] value
         let value ← mkLambdaFVars fixedParams value
-        -- This dsimp application will nicely resolve all PSigma.casesOn redexes
-        -- TODO: The foldLemma is not considered refl, so we use simp and throw away
-        -- the proof. Needs to be cleaned up
-        let (result, _) ← simp (← inferType value) {
-            config := {
-              -- Empirically determinied minially required simp options
-              beta := true
-              iota := true
-              zeta := false
-              eta := false
-              etaStruct := .none
-              proj := false
-            }
-            simpTheorems := (← SimpTheoremsArray.addTheorem {} (.decl name) foldLemma)
-        }
-        let value ← mkExpectedTypeHint value result.expr
+        let value ← cleanPackedArgs eqnInfo value
         return value
 
   let inductName := .append name `induct
