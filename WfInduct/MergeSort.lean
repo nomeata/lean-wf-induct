@@ -1,7 +1,7 @@
 import WfInduct.Basic
 import Std
 
-def merge (r : α → α → Bool) : List α → List α → List α
+def merge (r : α → α → Bool) : (l : List α) → (l' : List α) → List α
   | [], l' => l'
   | l, [] => l
   | a :: l, b :: l' => if r a b then a :: merge r l (b :: l') else b :: merge r (a :: l) l'
@@ -14,7 +14,7 @@ info: merge.induct.{u_1} {α : Type u_1} (r : α → α → Bool) (motive : List
   (case1 : ∀ (l' : List α), motive [] l') (case2 : ∀ (l : List α), (l = [] → False) → motive l [])
   (case3 : ∀ (a : α) (l : List α) (b : α) (l' : List α), r a b = true → motive l (b :: l') → motive (a :: l) (b :: l'))
   (case4 : ∀ (a : α) (l : List α) (b : α) (l' : List α), ¬r a b = true → motive (a :: l) l' → motive (a :: l) (b :: l'))
-  (a✝a✝¹ : List α) : motive a✝ a✝¹
+  (l l' : List α) : motive l l'
 -/
 #guard_msgs in
 #check merge.induct
