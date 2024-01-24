@@ -270,6 +270,9 @@ info: with_overlap.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : mo
 
 namespace UnusedExtraParams
 
+-- This test how unused fixed function parameters are handled.
+-- See comment in the code
+
 def unary (base : Nat) : Nat → Nat
   | 0 => base
   | n+1 => unary base n

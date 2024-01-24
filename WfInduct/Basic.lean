@@ -350,6 +350,12 @@ def deriveUnaryInduction (name : Name) : TermElabM Name := do
       for mvar in mvars, i in [:mvars.size] do
         mvar.setUserName s!"case{i+1}"
       let e' ← mkLambdaFVars (binderInfoForMVars := .default) (mvars.map .mvar) e'
+
+      -- We could pass (usedOnly := true) below, and get nicer induction principles that
+      -- do do not mention odd unused parameters.
+      -- But the downside is that automatic instantiation of the principle (e.g. when
+      -- deriving the binary one) is much harder, as one would have to infer which parameters
+      -- to pass. So for now lets just keep them around.
       let e' ← mkLambdaFVars (binderInfoForMVars := .default) (params.pop ++ #[motive]) e'
       let e' ← instantiateMVars e'
       let eTyp ← inferType e'
