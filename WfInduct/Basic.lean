@@ -41,7 +41,7 @@ def mapWriter {σ α m} [Monad m] (f : σ → m σ) (k : StateT (Array σ) m α)
 -- built from newIH
 partial def process (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
     StateT (Array Expr) MetaM Expr := do
-  if e.isApp  && e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
+  if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
     let #[arg, proof] := e.getAppArgs  | unreachable!
 
     let arg' ← process fn oldIH newIH arg
@@ -50,13 +50,14 @@ partial def process (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
     let IH := mkAppN (.fvar newIH) #[arg', proof']
     modify (·.push IH)
     return .app fn arg
-  else if e.isApp && e.getAppArgs.any (·.isFVarOf oldIH) then
+  else if e.getAppArgs.any (·.isFVarOf oldIH) then
     -- Sometimes Fix.lean abstracts over oldIH in a proof definition.
     -- So beta-reduce that definition.
 
     -- Need to look through theorems here!
     let e' ← withTransparency .all do whnf e
-    -- TODO: Check that e' actually changed
+    if e == e' then
+      throwError "process: cannot reduce application of {e.getAppFn}"
     process fn oldIH newIH e'
   else if let .letE n t v b _ := e then
     let v' ← process fn oldIH newIH v
@@ -126,7 +127,7 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
   mvarId ← assertIHs IHs mvarId
   -- logInfo m!"New hyp 2 {mvarId}"
   for fv in toClear do
-    mvarId ← mvarId.clear fv
+    mvarId ← mvarId.tryClear fv
   -- logInfo m!"New hyp 3 {mvarId}"
   mvarId ← mvarId.cleanup
   let (_, _mvarId) ← mvarId.revertAfter motiveFVar
@@ -312,7 +313,7 @@ partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : Me
       else
         findFixF body' (fun args e' => k (params ++ args) e')
 
-def deriveUnaryInduction (name : Name) : TermElabM Name := do
+def deriveUnaryInduction (name : Name) : MetaM Name := do
   let info ← getConstInfo name
   let e := Expr.const name (info.levelParams.map mkLevelParam)
   findFixF e fun params body => do
@@ -402,7 +403,7 @@ def cleanPackedArgs (eqnInfo : WF.EqnInfo) (value : Expr) : MetaM Expr := do
   }
   mkExpectedTypeHint value result.expr
 
-def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermElabM Unit := do
+def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): MetaM Unit := do
   if eqnInfo.declNames.size > 1 then
     throwError "Mutual recursion not supported"
   let name := eqnInfo.declNames[0]!
@@ -485,12 +486,15 @@ def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): TermE
     safety := DefinitionSafety.safe
 }
 
-elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
-  let [name] ← resolveGlobalConst ident
-    | throwErrorAt ident m!"ambiguous identifier"
+def deriveInduction (name : Name) : MetaM Unit := do
   if let some eqnInfo := WF.eqnInfoExt.find? (← getEnv) name then
     let unaryInductName ← deriveUnaryInduction eqnInfo.declNameNonRec
     unless eqnInfo.declNameNonRec = name do
       deriveBinaryInduction eqnInfo unaryInductName
   else
     _ ← deriveUnaryInduction name
+
+elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
+  let [name] ← resolveGlobalConst ident
+    | throwErrorAt ident m!"ambiguous identifier"
+  deriveInduction name
