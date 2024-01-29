@@ -37,19 +37,28 @@ def mapWriter {σ α m} [Monad m] (f : σ → m σ) (k : StateT (Array σ) m α)
     let s₂' ← s₂.mapM f
     pure (a, s₁ ++ s₂')
 
--- Non-tail-positions: Replace calls to oldIH with fn, and float out induction hypotheses
--- built from newIH
-partial def process (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
-    StateT (Array Expr) MetaM Expr := do
+-- Replace calls to oldIH back to calls to the original function. At the end,
+-- oldIH better be unused
+partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
+  -- logInfo m!"foldCalls {mkFVar oldIH} {indentExpr e}"
+  if ! e.hasAnyFVar (· == oldIH) then
+    return e
   if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
-    let #[arg, proof] := e.getAppArgs  | unreachable!
-
-    let arg' ← process fn oldIH newIH arg
-    let proof' ← process fn oldIH newIH proof
-
-    let IH := mkAppN (.fvar newIH) #[arg', proof']
-    modify (·.push IH)
-    return .app fn arg
+    let #[arg, _proof] := e.getAppArgs | unreachable!
+    let arg' ← foldCalls fn oldIH arg
+    return .app fn arg'
+  else if let .letE n t v b _ := e then
+    let v' ← foldCalls fn oldIH v
+    withLetDecl n t v' fun x => do
+      let b' ← foldCalls fn oldIH (b.instantiate1 x)
+      mkLetFVars  #[x] b'
+  else if let some (n, t, v, b) := e.letFun? then
+    let v' ← foldCalls fn oldIH v
+    withLocalDecl n .default t fun x => do
+      let b' ← foldCalls fn oldIH (b.instantiate1 x)
+      mkLetFun x v' b'
+  -- else if e.isMData then
+    -- return e.updateMData! (← process fn oldIH newIH e.getMDataArg!
   else if e.getAppArgs.any (·.isFVarOf oldIH) then
     -- Sometimes Fix.lean abstracts over oldIH in a proof definition.
     -- So beta-reduce that definition.
@@ -58,30 +67,58 @@ partial def process (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
     let e' ← withTransparency .all do whnf e
     if e == e' then
       throwError "process: cannot reduce application of {e.getAppFn}"
-    process fn oldIH newIH e'
+    foldCalls fn oldIH e'
+  else if let .app e1 e2 := e then
+    return .app (← foldCalls fn oldIH e1) (← foldCalls fn oldIH e2)
+  else if e.isLambda then
+    lambdaTelescope e fun xs body => do
+        let body' ← foldCalls fn oldIH body
+        mkLambdaFVars  xs body'
+  else
+    throwError "foldCalls: cannot eliminate {mkFVar oldIH} from {indentExpr e}"
+
+-- Non-tail-positions: Collect induction hypotheses
+-- (TODO: Worth folding with `foldCalls`, like before?)
+-- (TODO: Accumulated with a left fold)
+-- (TODO: Revert context in the leaf, based on local context?)
+partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
+    MetaM (Array Expr) := do
+  if ! e.hasAnyFVar (· == oldIH) then
+    return #[]
+  else if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
+    let #[arg, proof] := e.getAppArgs  | unreachable!
+
+    let arg' ← foldCalls fn oldIH arg
+    let proof' ← foldCalls fn oldIH proof
+    let ihs ← collectIHs fn oldIH newIH arg
+
+    return ihs.push (mkAppN (.fvar newIH) #[arg', proof'])
+
   else if let .letE n t v b _ := e then
-    let v' ← process fn oldIH newIH v
+    let ihs1 ← collectIHs fn oldIH newIH v
+    let v' ← foldCalls fn oldIH v
     withLetDecl n t v' fun x => do
-      mapWriter (mkLetFVars (usedLetOnly := true) #[x] ·) do
-      let b' ← process fn oldIH newIH (b.instantiate1 x)
-      mkLetFVars (usedLetOnly := false) #[x] b'
+      let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
+      let ihs2 ← ihs2.mapM (mkLetFVars (usedLetOnly := true) #[x] ·)
+      return ihs1 ++ ihs2
   else if let some (n, t, v, b) := e.letFun? then
-    let v' ← process fn oldIH newIH v
+    let ihs1 ← collectIHs fn oldIH newIH v
+    let v' ← foldCalls fn oldIH v
     withLocalDecl n .default t fun x => do
-      mapWriter (mkLetFun x v' ·) do
-      let b' ← process fn oldIH newIH (b.instantiate1 x)
-      mkLetFun x v' b'
+      let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
+      let ihs2 ← ihs2.mapM (mkLetFun x v' ·)
+      return ihs1 ++ ihs2
   -- else if e.isMData then
     -- return e.updateMData! (← process fn oldIH newIH e.getMDataArg!
   else if let .app e1 e2 := e then
-    return .app (← process fn oldIH newIH e1) (← process fn oldIH newIH e2)
+    return (← collectIHs fn oldIH newIH e1) ++ (← collectIHs fn oldIH newIH e2)
   else if e.isLambda then
+    -- TODO: Fold calls in types here?
     lambdaTelescope e fun xs body => do
-      mapWriter (mkLambdaFVars (usedOnly := true) xs ·) do
-        let body' ← process fn oldIH newIH body
-        mkLambdaFVars (usedOnly := false) xs body'
+      let ihs ← collectIHs fn oldIH newIH body
+      ihs.mapM (mkLambdaFVars (usedOnly := true) xs ·)
   else
-    return e
+    throwError "collectIHs: could not collect recursive calls from {indentExpr e}"
 
 def withLetDecls {α} (vals : Array Expr) (k : Array FVarId → MetaM α) (i : Nat := 0) : MetaM α := do
   if h : i < vals.size then
@@ -116,7 +153,7 @@ def assertIHs (vals : Array Expr) (mvarid : MVarId) : MetaM MVarId := do
 def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear : Array FVarId)
     (goal : Expr) (e : Expr) : MetaM Expr := do
   -- logInfo m!"Tail position {e}"
-  let (_e', IHs) ← process fn oldIH newIH e |>.run #[]
+  let IHs ← collectIHs fn oldIH newIH e
 
   -- deduplicatae IHs
   let IHs ← deduplicateIHs IHs
