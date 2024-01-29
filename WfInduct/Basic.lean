@@ -112,6 +112,11 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
     -- return e.updateMData! (← process fn oldIH newIH e.getMDataArg!
   else if let .app e1 e2 := e then
     return (← collectIHs fn oldIH newIH e1) ++ (← collectIHs fn oldIH newIH e2)
+  else if e.isForall then
+    -- TODO: Fold calls in types here?
+    forallTelescope e fun xs body => do
+      let ihs ← collectIHs fn oldIH newIH body
+      ihs.mapM (mkLambdaFVars (usedOnly := true) xs ·)
   else if e.isLambda then
     -- TODO: Fold calls in types here?
     lambdaTelescope e fun xs body => do
