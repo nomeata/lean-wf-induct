@@ -9,6 +9,7 @@ set_option autoImplicit false
 
 namespace Original
 
+
 def levelGeq (u v : Lean.Level) : Bool :=
     u == v ||
     match u, v with
@@ -27,7 +28,7 @@ termination_by (u, v)
 -- TODO: Refining through matcherApps even in non-tail-positions
 
 set_option pp.proofs.withType false
-#derive_induction levelGeq
+-- #derive_induction levelGeq
 
 end Original
 
