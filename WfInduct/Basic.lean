@@ -108,8 +108,73 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) :
       let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
       let ihs2 ← ihs2.mapM (mkLetFun x v' ·)
       return ihs1 ++ ihs2
-  -- else if e.isMData then
-    -- return e.updateMData! (← process fn oldIH newIH e.getMDataArg!
+  /- This is tricky! Not sure what best to do here.
+  if let some matcherApp ← matchMatcherApp? e then
+    -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
+    if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
+      let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
+        unless motiveArgs.size == matcherApp.discrs.size do
+          throwError "unexpected matcher application, motive must be lambda expression with #{matcherApp.discrs.size} arguments"
+
+        -- Remove the old IH that was added in mkFix
+        let eType ← newIH.getType
+        let eTypeAbst ← matcherApp.discrs.size.foldRevM (init := eType) fun i eTypeAbst => do
+          let motiveArg := motiveArgs[i]!
+          let discr     := matcherApp.discrs[i]!
+          let eTypeAbst ← kabstract eTypeAbst discr
+          return eTypeAbst.instantiate1 motiveArg
+
+        let goalAbst ← matcherApp.discrs.size.foldRevM (init := goal) fun i goalAbst => do
+          let motiveArg := motiveArgs[i]!
+          let discr     := matcherApp.discrs[i]!
+          let goalAbst ← kabstract goalAbst discr
+          return goalAbst.instantiate1 motiveArg
+
+        let motiveBody ← mkArrow eTypeAbst goalAbst
+        mkLambdaFVars motiveArgs motiveBody
+
+      let matcherLevels ← match matcherApp.uElimPos? with
+        | none     => pure matcherApp.matcherLevels
+        | some pos =>
+          let uElim := .zero -- TODO: Double check
+          pure <| matcherApp.matcherLevels.set! pos uElim
+
+      -- NB: Do *not* use the splitter here, we want fewer assumptions
+      let aux := mkAppN (mkConst matcherApp.matcherName matcherLevels.toList) matcherApp.params
+      let aux := mkApp aux motive'
+      let aux := mkAppN aux matcherApp.discrs
+      unless (← isTypeCorrect aux) do
+        throwError "failed to add argument to matcher application, type error when constructing the new motive"
+      let mut auxType ← inferType aux
+
+      let mut altIHss := #[]
+      for alt in matcherApp.alts,
+          numParams in matcherApp.altNumParams do
+        let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
+        let altIHs ← forallBoundedTelescope d (some numParams) fun xs d => do
+          let alt ← try instantiateLambda alt xs[:numParams] catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
+          let altIHs ← removeLamda alt fun oldIH' alt => do
+            let altIHs ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
+              let #[newIH'] := newIH' | unreachable!
+              -- logInfo m!"goal': {goal'}"
+              let alsIHs ← collectIHs fn oldIH' newIH'.fvarId! alt
+              altIHs.mapM (mkLambdaFVars #[newIH'])
+            altIHs.mapM (mkLambdaFVars xs)
+        let dummy := mkSort levelZero
+        auxType := b.instantiate1 dummy -- ugh, what to instantiate here? Lets hope they are unused
+        altIHss := altIHss.push altIHs
+      let matcherApp' := { matcherApp with
+        matcherLevels := matcherLevels,
+        motive        := motive',
+        alts          := alts',
+        remaining     := matcherApp.remaining.set! 0 (.fvar newIH)
+      }
+      -- check matcherApp'.toExpr
+      -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
+      return matcherApp'.toExpr
+  -/
+  else if e.getAppArgs.any (·.isFVarOf oldIH) then
+    throwError "collectIHs: could not collect recursive calls from {indentExpr e}"
   else if let .app e1 e2 := e then
     return (← collectIHs fn oldIH newIH e1) ++ (← collectIHs fn oldIH newIH e2)
   else if e.isForall then
