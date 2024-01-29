@@ -110,7 +110,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
   else if let some matcherApp ← matchMatcherApp? e then
     -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
-      let (motive', goalMVar) ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
+      let (motive', goalMVar, goalArgs) ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
         unless motiveArgs.size == matcherApp.discrs.size do
           throwError "unexpected matcher application, motive must be lambda expression with #{matcherApp.discrs.size} arguments"
 
@@ -125,7 +125,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
         let goalMVar ← mkFreshExprSyntheticOpaqueMVar (.sort levelZero) (tag := `goal)
 
         let motiveBody ← mkArrow eTypeAbst goalMVar
-        return (← mkLambdaFVars motiveArgs motiveBody, goalMVar)
+        return (← mkLambdaFVars motiveArgs motiveBody, goalMVar, motiveArgs)
 
       let matcherLevels ← match matcherApp.uElimPos? with
         | none     => pure matcherApp.matcherLevels
@@ -151,7 +151,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
             forallBoundedTelescope d (some 1) fun newIH' _goal' => do
               let #[newIH'] := newIH' | unreachable!
               let altIHs ← collectIHs fn oldIH' newIH'.fvarId! alt
-              let altIH := altIHs.foldr (mkApp2 (.const ``And.intro [])) (.const ``True.intro [])
+              let altIH ← altIHs.foldrM (fun a b => mkAppM ``And.intro #[a,b]) (Expr.const ``True.intro [])
               mkLambdaFVars #[newIH'] altIH
           mkLambdaFVars xs altIH
         let dummy := mkSort levelZero
@@ -159,21 +159,26 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
         altIHs := altIHs.push altIH
 
       -- Now figure out the type, with an explicit match
-      let propMotive ← lambdaTelescope motive' fun motiveArgs _motiveBody => do
-        mkLambdaFVars motiveArgs (.sort levelZero)
-      let propAlts ← altIHs.mapM fun altIH =>
-        lambdaTelescope altIH fun xs altIH => do
-          logInfo "Foo"
-          mkForallFVars xs (← inferType altIH)
-      let typeMatcherApp := { matcherApp with
-        motive := propMotive
-        alts := propAlts
-        remaining     := #[] -- matcherApp.remaining.set! 0 (.fvar newIH)
-      }
-      goalMVar.mvarId!.assign typeMatcherApp.toExpr
-      logInfo m!"Bar: {← instantiateMVars goalMVar}"
-      check (← instantiateMVars goalMVar)
-      logInfo "Baz"
+      goalMVar.mvarId!.withContext do
+        let propMotive ← lambdaTelescope motive' fun motiveArgs _motiveBody => do
+          mkLambdaFVars motiveArgs (.sort levelZero)
+        let propAlts ← altIHs.mapM fun altIH =>
+          lambdaTelescope altIH fun xs altIH => do
+            -- logInfo m!"altIH: {xs} => {altIH}"
+            let altType ← inferType altIH
+            -- logInfo m!"altIH type: {altType}"
+            if altType.hasAnyFVar (· == xs.back.fvarId!) then
+              throwError "Type {altType} of alternative {altIH} still depends on the IH"
+            mkLambdaFVars xs.pop altType
+        let typeMatcherApp := { matcherApp with
+          motive := propMotive
+          discrs := goalArgs
+          alts := propAlts
+          remaining := #[] -- matcherApp.remaining.set! 0 (.fvar newIH)
+        }
+        goalMVar.mvarId!.assign typeMatcherApp.toExpr
+        -- logInfo m!"Inferred type for match-in-types: {← instantiateMVars goalMVar}"
+        -- check (← instantiateMVars goalMVar)
 
       let matcherApp' := { matcherApp with
         matcherLevels := matcherLevels,
@@ -618,31 +623,3 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let [name] ← resolveGlobalConst ident
     | throwErrorAt ident m!"ambiguous identifier"
   deriveInduction name
-
-
-def match_non_tail (n : Nat ) : Bool :=
-  n = 42 || match n with
-  | 0 => true
-  | n+1 => match_non_tail n
-termination_by n
-
-def match_non_tail_induct
-  {motive : Nat → Prop}
-  (case1 : forall n, (IH : match n with | 0 => True | n+1 => motive n) → motive n)
-  (n : Nat) : motive n :=
-  WellFounded.fix Nat.lt_wfRel.wf (fun n IH =>
-    match n with
-    | 0 => case1 0 True.intro
-    | n+1 =>
-      case1 (n+1) (IH n (Nat.lt_succ_self _))
-  ) n
-
-theorem match_non_tail_eq_true (n : Nat) : match_non_tail n = true := by
-  induction n using match_non_tail_induct
-  case case1 n IH =>
-    unfold match_non_tail
-    split <;> dsimp at IH <;> simp [IH]
-
-
-set_option pp.rawOnError true in
-#derive_induction match_non_tail

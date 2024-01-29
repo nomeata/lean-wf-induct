@@ -300,3 +300,46 @@ info: UnusedExtraParams.binary.induct (base : Nat) (motive : Nat → Nat → Pro
 #check binary.induct
 
 end UnusedExtraParams
+
+namespace NonTailrecMatch
+
+def match_non_tail (n : Nat ) : Bool :=
+  n = 42 || match n with
+  | 0 => true
+  | n+1 => match_non_tail n
+termination_by n
+
+def match_non_tail_induct
+  {motive : Nat → Prop}
+  (case1 : forall n, (IH : match n with | 0 => True | n+1 => motive n) → motive n)
+  (n : Nat) : motive n :=
+  WellFounded.fix Nat.lt_wfRel.wf (fun n IH =>
+    match n with
+    | 0 => case1 0 True.intro
+    | n+1 =>
+      case1 (n+1) (IH n (Nat.lt_succ_self _))
+  ) n
+
+#derive_induction match_non_tail
+
+/--
+info: NonTailrecMatch.match_non_tail.induct (motive : Nat → Prop)
+  (case1 :
+    ∀ (x : Nat),
+      (match x with
+        | 0 => True
+        | Nat.succ n => motive n ∧ True) →
+        motive x)
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check match_non_tail.induct
+
+
+theorem match_non_tail_eq_true (n : Nat) : match_non_tail n = true := by
+  induction n using match_non_tail.induct
+  case case1 n IH =>
+    unfold match_non_tail
+    split <;> dsimp at IH <;> simp [IH]
+
+end NonTailrecMatch
