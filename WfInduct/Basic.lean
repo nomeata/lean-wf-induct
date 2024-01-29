@@ -371,7 +371,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
               let #[newIH'] := newIH' | unreachable!
               -- logInfo m!"goal': {goal'}"
               let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! alt
-              mkLambdaFVars #[newIH'] alt' -- x is the new argument we are adding to the alternative
+              mkLambdaFVars #[newIH'] alt'
             mkLambdaFVars xs alt'
           pure alt'
         auxType := b.instantiate1 alt'
@@ -406,7 +406,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
       mkLetFun x v b'
   else
-    -- logInfo m!"End of buildInductionBody: {e}"
+    -- logInfo m!"Tail position at end of buildInductionBody: {e}"
     createHyp motiveFVar fn oldIH newIH toClear goal e
 
 partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
