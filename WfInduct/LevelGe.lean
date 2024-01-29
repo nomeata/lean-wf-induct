@@ -1,8 +1,22 @@
 import Lean
 import WfInduct.Basic
 import Std.Tactic.GuardMsgs
+import Lean.PrettyPrinter.Delaborator
+import Lean.PrettyPrinter.Delaborator.SubExpr
 
 open Lean
+
+open Meta
+
+open Lean.PrettyPrinter
+open Lean.PrettyPrinter.Delaborator
+open Lean.PrettyPrinter.Delaborator.SubExpr
+
+@[delab app.PSigma.mk]
+def delabSigma : Delab := whenPPOption getPPNotation do
+  let Expr.app (.app _ x) y ← getExpr | failure
+  `(⟨ $(← delab x), $(← delab y)⟩)
+
 
 set_option autoImplicit false
 
@@ -25,7 +39,8 @@ termination_by (u, v)
 
 -- TODO: Refining through matcherApps even in non-tail-positions
 
--- #derive_induction levelGeq
+set_option pp.proofs.withType false
+#derive_induction levelGeq
 
 end Original
 
