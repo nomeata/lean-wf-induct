@@ -110,7 +110,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
   else if let some matcherApp ← matchMatcherApp? e then
     -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
-      let (motive', goalMVar, goalArgs) ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
+      let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
         unless motiveArgs.size == matcherApp.discrs.size do
           throwError "unexpected matcher application, motive must be lambda expression with #{matcherApp.discrs.size} arguments"
 
@@ -122,10 +122,12 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
           let eTypeAbst ← kabstract eTypeAbst discr
           return eTypeAbst.instantiate1 motiveArg
 
-        let goalMVar ← mkFreshExprSyntheticOpaqueMVar (.sort levelZero) (tag := `goal)
+        -- Will later be overriden with a type that’s itself a match
+        -- statement and the infered alt types
+        let dummyGoal := mkConst ``True []
 
-        let motiveBody ← mkArrow eTypeAbst goalMVar
-        return (← mkLambdaFVars motiveArgs motiveBody, goalMVar, motiveArgs)
+        let motiveBody ← mkArrow eTypeAbst dummyGoal
+        mkLambdaFVars motiveArgs motiveBody
 
       let matcherLevels ← match matcherApp.uElimPos? with
         | none     => pure matcherApp.matcherLevels
@@ -158,10 +160,11 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
         auxType := b.instantiate1 dummy -- ugh, what to instantiate here? Lets hope they are unused
         altIHs := altIHs.push altIH
 
-      -- Now figure out the type, with an explicit match
-      goalMVar.mvarId!.withContext do
-        let propMotive ← lambdaTelescope motive' fun motiveArgs _motiveBody => do
-          mkLambdaFVars motiveArgs (.sort levelZero)
+      -- Now figure out the actual motive, with an explicit match
+      let motive'' ← lambdaTelescope motive' fun motiveArgs motiveBody => do
+        let some (extra, _dummy) := motiveBody.arrow? |
+          throwError "motive as expected"
+        let propMotive ← mkLambdaFVars motiveArgs (.sort levelZero)
         let propAlts ← altIHs.mapM fun altIH =>
           lambdaTelescope altIH fun xs altIH => do
             -- logInfo m!"altIH: {xs} => {altIH}"
@@ -172,27 +175,61 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
             mkLambdaFVars xs.pop altType
         let typeMatcherApp := { matcherApp with
           motive := propMotive
-          discrs := goalArgs
+          discrs := motiveArgs
           alts := propAlts
           remaining := #[] -- matcherApp.remaining.set! 0 (.fvar newIH)
         }
-        goalMVar.mvarId!.assign typeMatcherApp.toExpr
-        -- logInfo m!"Inferred type for match-in-types: {← instantiateMVars goalMVar}"
-        -- check (← instantiateMVars goalMVar)
+        mkLambdaFVars motiveArgs (← mkArrow extra typeMatcherApp.toExpr)
+
+      -- Finally, cast the types of the alts as necessary
+      let aux := mkAppN (mkConst matcherApp.matcherName matcherLevels.toList) matcherApp.params
+      let aux := mkApp aux motive''
+      let aux := mkAppN aux matcherApp.discrs
+      unless (← isTypeCorrect aux) do
+        throwError "matcher with final motive is not type correct"
+      auxType ← inferType aux
+
+      let mut finalAlts := #[]
+      for alt in altIHs, numParams in matcherApp.altNumParams do
+        let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
+        let finalAlt ← forallBoundedTelescope d (some (numParams+1)) fun xs d => do
+          let alt ← try instantiateLambda alt xs
+            catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
+          let altType ← inferType alt
+          let expType := d
+          let eq ← mkEq expType altType
+          let proof ← mkFreshExprSyntheticOpaqueMVar eq
+          let goal := proof.mvarId!
+          -- logInfo m!"Goal: {goal}"
+          let goal ← Split.simpMatchTarget goal
+          -- logInfo m!"Goal after splitting: {goal}"
+          try
+            goal.refl
+          catch _ =>
+            logInfo m!"Cannot cloal goal after splitting: {goal}"
+            goal.admit
+          mkLambdaFVars xs (← mkEqMPR proof alt)
+        -- logInfo m!"Wrapped IH: {finalAlt}"
+        let dummy := mkSort levelZero
+        auxType := b.instantiate1 dummy -- ugh, what to instantiate here? Lets hope they are unused
+        finalAlts := finalAlts.push finalAlt
+
+      -- logInfo m!"Inferred motive for match-in-types: {indentExpr motive''}"
+      check motive''
 
       let matcherApp' := { matcherApp with
         matcherLevels := matcherLevels,
-        motive        := motive',
-        alts          := altIHs,
+        motive        := motive'',
+        alts          := finalAlts,
         remaining     := matcherApp.remaining.set! 0 (.fvar newIH)
       }
-      -- check matcherApp'.toExpr
-      -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
+      -- logInfo m!"matcherApp' {indentExpr matcherApp'.toExpr}"
+      check matcherApp'.toExpr
       return #[ matcherApp'.toExpr ]
     else
       throwError "collectIHs: non-refining matcher?"
   else if e.getAppArgs.any (·.isFVarOf oldIH) then
-    throwError "collectIHs: could not collect recursive calls from {indentExpr e}"
+    throwError "collectIHs: could not collect recursive calls from call {indentExpr e}"
   else if let .app e1 e2 := e then
     return (← collectIHs fn oldIH newIH e1) ++ (← collectIHs fn oldIH newIH e2)
   else if e.isForall then
@@ -205,6 +242,8 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
     lambdaTelescope e fun xs body => do
       let ihs ← collectIHs fn oldIH newIH body
       ihs.mapM (mkLambdaFVars (usedOnly := true) xs ·)
+  else if let .mdata _m b := e then
+    collectIHs fn oldIH newIH b
   else
     throwError "collectIHs: could not collect recursive calls from {indentExpr e}"
 
@@ -623,3 +662,26 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let [name] ← resolveGlobalConst ident
     | throwErrorAt ident m!"ambiguous identifier"
   deriveInduction name
+
+
+namespace NonTailrecMatch
+
+def match_non_tail (n : Nat ) : Bool :=
+  n = 42 || match n, 30 with
+  | 0, _ => true
+  | 1, _ => true
+  | n+1, _ => match_non_tail n
+termination_by n
+
+#derive_induction match_non_tail
+
+-- #check match_non_tail.induct
+
+
+-- theorem match_non_tail_eq_true (n : Nat) : match_non_tail n = true := by
+--   induction n using match_non_tail.induct
+--   case case1 n IH =>
+--     unfold match_non_tail
+--     split <;> dsimp at IH <;> simp [IH]
+
+end NonTailrecMatch
