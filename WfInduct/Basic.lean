@@ -84,7 +84,8 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
 partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Array Expr) := do
   if ! e.hasAnyFVar (· == oldIH) then
     return #[]
-  else if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
+
+  if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
     let #[arg, proof] := e.getAppArgs  | unreachable!
 
     let arg' ← foldCalls fn oldIH arg
@@ -93,21 +94,23 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
 
     return ihs.push (mkAppN (.fvar newIH) #[arg', proof'])
 
-  else if let .letE n t v b _ := e then
+  if let .letE n t v b _ := e then
     let ihs1 ← collectIHs fn oldIH newIH v
     let v' ← foldCalls fn oldIH v
-    withLetDecl n t v' fun x => do
+    return ← withLetDecl n t v' fun x => do
       let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
       let ihs2 ← ihs2.mapM (mkLetFVars (usedLetOnly := true) #[x] ·)
       return ihs1 ++ ihs2
-  else if let some (n, t, v, b) := e.letFun? then
+
+  if let some (n, t, v, b) := e.letFun? then
     let ihs1 ← collectIHs fn oldIH newIH v
     let v' ← foldCalls fn oldIH v
-    withLocalDecl n .default t fun x => do
+    return ← withLocalDecl n .default t fun x => do
       let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
       let ihs2 ← ihs2.mapM (mkLetFun x v' ·)
       return ihs1 ++ ihs2
-  else if let some matcherApp ← matchMatcherApp? e then
+
+  if let some matcherApp ← matchMatcherApp? e then
     -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
       let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
@@ -182,7 +185,12 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
         mkLambdaFVars motiveArgs (← mkArrow extra typeMatcherApp.toExpr)
 
       -- Finally, cast the types of the alts as necessary
-      let aux := mkAppN (mkConst matcherApp.matcherName matcherLevels.toList) matcherApp.params
+      -- We need to use the splitter now, else we cannot reduce
+      -- the match in the type
+      let matchEqns ← Match.getEquationsFor matcherApp.matcherName
+      let splitter := matchEqns.splitterName
+
+      let aux := mkAppN (mkConst splitter matcherLevels.toList) matcherApp.params
       let aux := mkApp aux motive''
       let aux := mkAppN aux matcherApp.discrs
       unless (← isTypeCorrect aux) do
@@ -190,10 +198,14 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       auxType ← inferType aux
 
       let mut finalAlts := #[]
-      for alt in altIHs, numParams in matcherApp.altNumParams do
+      for alt in altIHs,
+        splitterNumParams in matchEqns.splitterAltNumParams,
+        numParams in matcherApp.altNumParams do
         let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
-        let finalAlt ← forallBoundedTelescope d (some (numParams+1)) fun xs d => do
-          let alt ← try instantiateLambda alt xs
+        let finalAlt ← forallBoundedTelescope d (some (splitterNumParams+1)) fun xs d => do
+          -- Skip the splitter arguments
+          let altArgs := xs[:numParams] ++ xs[splitterNumParams:]
+          let alt ← try instantiateLambda alt altArgs
             catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
           let altType ← inferType alt
           let expType := d
@@ -218,6 +230,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       check motive''
 
       let matcherApp' := { matcherApp with
+        matcherName   := splitter,
         matcherLevels := matcherLevels,
         motive        := motive'',
         alts          := finalAlts,
@@ -226,26 +239,29 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       -- logInfo m!"matcherApp' {indentExpr matcherApp'.toExpr}"
       check matcherApp'.toExpr
       return #[ matcherApp'.toExpr ]
-    else
-      throwError "collectIHs: non-refining matcher?"
-  else if e.getAppArgs.any (·.isFVarOf oldIH) then
+
+  if e.getAppArgs.any (·.isFVarOf oldIH) then
     throwError "collectIHs: could not collect recursive calls from call {indentExpr e}"
-  else if let .app e1 e2 := e then
+
+  if let .app e1 e2 := e then
     return (← collectIHs fn oldIH newIH e1) ++ (← collectIHs fn oldIH newIH e2)
-  else if e.isForall then
+
+  if e.isForall then
     -- TODO: Fold calls in types here?
-    forallTelescope e fun xs body => do
+    return ← forallTelescope e fun xs body => do
       let ihs ← collectIHs fn oldIH newIH body
       ihs.mapM (mkLambdaFVars (usedOnly := true) xs ·)
-  else if e.isLambda then
+
+  if e.isLambda then
     -- TODO: Fold calls in types here?
-    lambdaTelescope e fun xs body => do
+    return ← lambdaTelescope e fun xs body => do
       let ihs ← collectIHs fn oldIH newIH body
       ihs.mapM (mkLambdaFVars (usedOnly := true) xs ·)
-  else if let .mdata _m b := e then
-    collectIHs fn oldIH newIH b
-  else
-    throwError "collectIHs: could not collect recursive calls from {indentExpr e}"
+
+  if let .mdata _m b := e then
+    return ← collectIHs fn oldIH newIH b
+
+  throwError "collectIHs: could not collect recursive calls from {indentExpr e}"
 
 def withLetDecls {α} (vals : Array Expr) (k : Array FVarId → MetaM α) (i : Nat := 0) : MetaM α := do
   if h : i < vals.size then
@@ -662,26 +678,3 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let [name] ← resolveGlobalConst ident
     | throwErrorAt ident m!"ambiguous identifier"
   deriveInduction name
-
-
-namespace NonTailrecMatch
-
-def match_non_tail (n : Nat ) : Bool :=
-  n = 42 || match n, 30 with
-  | 0, _ => true
-  | 1, _ => true
-  | n+1, _ => match_non_tail n
-termination_by n
-
-#derive_induction match_non_tail
-
--- #check match_non_tail.induct
-
-
--- theorem match_non_tail_eq_true (n : Nat) : match_non_tail n = true := by
---   induction n using match_non_tail.induct
---   case case1 n IH =>
---     unfold match_non_tail
---     split <;> dsimp at IH <;> simp [IH]
-
-end NonTailrecMatch

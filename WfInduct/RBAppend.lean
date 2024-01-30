@@ -44,8 +44,9 @@ termination_by x y => x.size + y.size
 
 set_option pp.proofs.withType false
 set_option pp.match false
-#print RBNode.append._unary
 -- #derive_induction RBNode.append
+
+/-
 
 elab "#tmp" : command => Lean.Elab.Command.runTermElabM  fun _ => do
   if let some mi ← Lean.Meta.getMatcherInfo? `RBNode.RBNode.append.match_2 then
@@ -66,6 +67,7 @@ theorem ex (n : Nat ): (match n with
 
 #check ex.match_1.splitter
 
+-/
 
 namespace NoAsPattern
 
