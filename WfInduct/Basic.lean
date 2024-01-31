@@ -91,42 +91,56 @@ def mapWriter {σ α m} [Monad m] (f : σ → m σ) (k : StateT (Array σ) m α)
 -- Replace calls to oldIH back to calls to the original function. At the end,
 -- oldIH better be unused
 partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
-  -- logInfo m!"foldCalls {mkFVar oldIH} {indentExpr e}"
-  if ! e.hasAnyFVar (· == oldIH) then
-    return e
-  if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
-    let #[arg, _proof] := e.getAppArgs | unreachable!
-    let arg' ← foldCalls fn oldIH arg
-    return .app fn arg'
-  else if let .letE n t v b _ := e then
-    let v' ← foldCalls fn oldIH v
-    withLetDecl n t v' fun x => do
-      let b' ← foldCalls fn oldIH (b.instantiate1 x)
-      mkLetFVars  #[x] b'
-  else if let some (n, t, v, b) := e.letFun? then
-    let v' ← foldCalls fn oldIH v
-    withLocalDecl n .default t fun x => do
-      let b' ← foldCalls fn oldIH (b.instantiate1 x)
-      mkLetFun x v' b'
-  -- else if e.isMData then
-    -- return e.updateMData! (← process fn oldIH newIH e.getMDataArg!
-  else if e.getAppArgs.any (·.isFVarOf oldIH) then
-    -- Sometimes Fix.lean abstracts over oldIH in a proof definition.
-    -- So beta-reduce that definition.
+  let r ← id do
+    -- logInfo m!"foldCalls {mkFVar oldIH} {indentExpr e}"
+    if ! e.hasAnyFVar (· == oldIH) then
+      return e
 
-    -- Need to look through theorems here!
-    let e' ← withTransparency .all do whnf e
-    if e == e' then
-      throwError "process: cannot reduce application of {e.getAppFn}"
-    foldCalls fn oldIH e'
-  else if let .app e1 e2 := e then
-    return .app (← foldCalls fn oldIH e1) (← foldCalls fn oldIH e2)
-  else if e.isLambda then
-    lambdaTelescope e fun xs body => do
-        let body' ← foldCalls fn oldIH body
-        mkLambdaFVars  xs body'
-  else
+    if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
+      let #[arg, _proof] := e.getAppArgs | unreachable!
+      let arg' ← foldCalls fn oldIH arg
+      return .app fn arg'
+
+    if let .letE n t v b _ := e then
+      let t' ← foldCalls fn oldIH t
+      let v' ← foldCalls fn oldIH v
+      return ← withLetDecl n t' v' fun x => do
+        let b' ← foldCalls fn oldIH (b.instantiate1 x)
+        mkLetFVars  #[x] b'
+
+    if let some (n, t, v, b) := e.letFun? then
+      let t' ← foldCalls fn oldIH t
+      let v' ← foldCalls fn oldIH v
+      return ← withLocalDecl n .default t' fun x => do
+        let b' ← foldCalls fn oldIH (b.instantiate1 x)
+        mkLetFun x v' b'
+
+    if e.getAppArgs.any (·.isFVarOf oldIH) then
+      -- Sometimes Fix.lean abstracts over oldIH in a proof definition.
+      -- So beta-reduce that definition.
+
+      -- Need to look through theorems here!
+      let e' ← withTransparency .all do whnf e
+      if e == e' then
+        throwError "process: cannot reduce application of {e.getAppFn}"
+      return ← foldCalls fn oldIH e'
+
+    if let .app e1 e2 := e then
+      return .app (← foldCalls fn oldIH e1) (← foldCalls fn oldIH e2)
+
+    if let .lam n t body bi := e then
+      let t' ← foldCalls fn oldIH t
+      return ← withLocalDecl n bi t' fun x => do
+        let body' ← foldCalls fn oldIH (body.instantiate1 x)
+        mkLambdaFVars #[x] body'
+
+    -- Looks like there are more expression forms to handle here
     throwError "foldCalls: cannot eliminate {mkFVar oldIH} from {indentExpr e}"
+
+  -- sanity check for debugging
+  if r.hasAnyFVar (· == oldIH) then
+    throwError "foldCalls: failed to eliminate {mkFVar oldIH} from {indentExpr r}"
+  return r
 
 -- Non-tail-positions: Collect induction hypotheses
 -- (TODO: Worth folding with `foldCalls`, like before?)
