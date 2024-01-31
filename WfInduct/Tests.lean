@@ -300,3 +300,156 @@ info: UnusedExtraParams.binary.induct (base : Nat) (motive : Nat → Nat → Pro
 #check binary.induct
 
 end UnusedExtraParams
+
+namespace NonTailrecMatch
+
+def match_non_tail (n : Nat ) : Bool :=
+  n = 42 || match n with
+  | 0 => true
+  | n+1 => match_non_tail n
+termination_by n
+
+def match_non_tail_induct
+  {motive : Nat → Prop}
+  (case1 : forall n, (IH : match n with | 0 => True | n+1 => motive n) → motive n)
+  (n : Nat) : motive n :=
+  WellFounded.fix Nat.lt_wfRel.wf (fun n IH =>
+    match n with
+    | 0 => case1 0 True.intro
+    | n+1 =>
+      case1 (n+1) (IH n (Nat.lt_succ_self _))
+  ) n
+
+#derive_induction match_non_tail
+
+/--
+info: NonTailrecMatch.match_non_tail.induct (motive : Nat → Prop)
+  (case1 :
+    ∀ (x : Nat),
+      (match x with
+        | 0 => True
+        | Nat.succ n => motive n ∧ True) →
+        motive x)
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check match_non_tail.induct
+
+
+theorem match_non_tail_eq_true (n : Nat) : match_non_tail n = true := by
+  induction n using match_non_tail.induct
+  case case1 n IH =>
+    unfold match_non_tail
+    split <;> dsimp at IH <;> simp [IH]
+
+end NonTailrecMatch
+
+
+namespace AsPattern
+
+def foo (n : Nat) :=
+  match n with
+  | 0 => 0
+  | x@(n+1) => x + foo n
+termination_by n
+#derive_induction foo
+
+/--
+info: AsPattern.foo.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : ∀ (n : Nat), motive n → motive (Nat.succ n))
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+
+
+def bar (n : Nat) :=
+  1 +
+  match n with
+  | 0 => 0
+  | x@(n+1) => x + bar n
+termination_by n
+#derive_induction bar
+
+/--
+info: AsPattern.bar.induct (motive : Nat → Prop)
+  (case1 :
+    ∀ (x : Nat),
+      (match x with
+        | 0 => True
+        | x@h:(Nat.succ n) => motive n ∧ True) →
+        motive x)
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check bar.induct
+
+end AsPattern
+
+namespace GramSchmidt
+
+-- this tried to repoduce a problem with gramSchmidt,
+-- with more proofs from `simp` abstracting over the IH.
+-- I couldn't quite reproduce it, but let's keep it.
+
+def below (n i : Nat) := i < n
+
+@[simp]
+def below_lt (n i : Nat) (h : below n i) : i < n := h
+
+def sum_below (n : Nat) (f : (i : Nat) → below n i → Nat) :=
+  match n with
+  | 0 => 0
+  | n+1 => sum_below n (fun i hi => f i (Nat.lt_succ_of_le (Nat.le_of_lt hi))) +
+          f n (Nat.lt_succ_self n)
+
+def foo (n : Nat) :=
+  1 + sum_below n (fun i _ => foo i)
+termination_by n
+decreasing_by
+  simp_wf
+  simp [below_lt, *]
+
+#derive_induction foo
+/--
+info: GramSchmidt.foo.induct (motive : Nat → Prop) (case1 : ∀ (x : Nat), (∀ (i : Nat), below x i → motive i) → motive x)
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+end GramSchmidt
+
+namespace LetFun
+
+def foo {α} (x : α) : List α → Nat
+  | .nil => 0
+  | .cons _y ys =>
+      let this := foo x ys
+      this
+termination_by xs => xs
+#derive_induction foo
+/--
+info: LetFun.foo.induct.{u_1} {α : Type u_1} (x : α) (motive : List α → Prop) (case1 : motive [])
+  (case2 : ∀ (_y : α) (ys : List α), motive ys → motive (_y :: ys)) (x : List α) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+
+def bar {α} (x : α) : List α → Nat
+  | .nil => 0
+  | .cons _y ys =>
+      have this := bar x ys
+      this
+termination_by xs => xs
+
+#derive_induction bar
+/--
+info: LetFun.bar.induct.{u_1} {α : Type u_1} (x : α) (motive : List α → Prop) (case1 : motive [])
+  (case2 : ∀ (_y : α) (ys : List α), motive ys → motive (_y :: ys)) (x : List α) : motive x
+-/
+#guard_msgs in
+#check bar.induct
+
+end LetFun
