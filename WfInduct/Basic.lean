@@ -115,7 +115,33 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
         let b' ← foldCalls fn oldIH (b.instantiate1 x)
         mkLetFun x v' b'
 
-    -- TODO: Need to remove the argument from match applications.
+    if let some matcherApp ← matchMatcherApp? e then
+      -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
+      if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
+        let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs motiveBody => do
+          unless motiveArgs.size == matcherApp.discrs.size do
+            throwError "unexpected matcher application, motive must be lambda expression with #{matcherApp.discrs.size} arguments"
+          -- TODO: Also fold in body of the motive?
+          let some (_extra, body) := motiveBody.arrow? | throwError "motive not an arrow"
+          mkLambdaFVars motiveArgs body
+
+        let mut alts' : Array Expr := #[]
+        for alt in matcherApp.alts, numParams in matcherApp.altNumParams do
+          let alt' ← lambdaTelescope alt fun xs alt => do
+            unless xs.size = numParams + 1 do
+              throwError "unexpected matcher application, alternative must be lambda expression with #{numParams + 1} arguments"
+            let alt ← foldCalls fn (xs.back.fvarId!) alt
+            mkLambdaFVars xs.pop alt
+          alts' := alts'.push alt'
+
+        let matcherApp' := { matcherApp with
+          motive        := motive'
+          alts          := alts'
+          remaining     := #[]
+        }
+        -- check matcherApp'.toExpr
+        -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
+        return matcherApp'.toExpr
 
     if e.getAppArgs.any (·.isFVarOf oldIH) then
       -- Sometimes Fix.lean abstracts over oldIH in a proof definition.
@@ -240,7 +266,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       -- Now figure out the actual motive, with an explicit match
       let motive'' ← lambdaTelescope motive' fun motiveArgs motiveBody => do
         let some (extra, _dummy) := motiveBody.arrow? |
-          throwError "motive as expected"
+          throwError "motive not an arrow"
         let propMotive ← mkLambdaFVars motiveArgs (.sort levelZero)
         let propAlts ← altIHs.mapM fun altIH =>
           lambdaTelescope altIH fun xs altIH => do
