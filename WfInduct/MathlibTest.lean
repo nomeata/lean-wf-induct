@@ -1,5 +1,6 @@
 import Mathlib
 import WfInduct.Basic
+import WfInduct.DelabPSigma
 import Lean
 
 open Lean Elab Meta Command
@@ -17,9 +18,8 @@ elab "#derive_all_inductions" : command => runTermElabM fun _ => do
         -- IO.println s!"Testing {eqnInfo.declNameNonRec}"
         try
           let _inductName ← deriveUnaryInduction eqnInfo.declNameNonRec
-          -- logInfo m!"Derived {inductName}"
+          -- logInfo m!"Derived {inductName} : {indentExpr (← getConstInfo inductName).type}"
           good := good + 1
-          -- logInfo m!" with type {indentExpr (← getConstInfo inductName).type}"
         catch e =>
           logInfo m!"Failed to derive: {e.toMessageData}"
           bad := bad + 1
