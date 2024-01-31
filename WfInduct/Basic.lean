@@ -134,6 +134,12 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
         let body' ← foldCalls fn oldIH (body.instantiate1 x)
         mkLambdaFVars #[x] body'
 
+    if let .forallE n t body bi := e then
+      let t' ← foldCalls fn oldIH t
+      return ← withLocalDecl n bi t' fun x => do
+        let body' ← foldCalls fn oldIH (body.instantiate1 x)
+        mkForallFVars #[x] body'
+
     -- Looks like there are more expression forms to handle here
     throwError "foldCalls: cannot eliminate {mkFVar oldIH} from {indentExpr e}"
 
@@ -330,17 +336,17 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
   if let .proj _ _ e := e then
     return ← collectIHs fn oldIH newIH e
 
-  if e.isForall then
-    -- TODO: Fold calls in types here?
-    return ← forallTelescope e fun xs body => do
-      let ihs ← collectIHs fn oldIH newIH body
-      ihs.mapM (mkLambdaFVars (usedOnly := true) xs ·)
+  if let .forallE n t body bi := e then
+    let t' ← foldCalls fn oldIH t
+    return ← withLocalDecl n bi t' fun x => do
+      let ihs ← collectIHs fn oldIH newIH (body.instantiate1 x)
+      ihs.mapM (mkLambdaFVars (usedOnly := true) #[x])
 
-  if e.isLambda then
-    -- TODO: Fold calls in types here?
-    return ← lambdaTelescope e fun xs body => do
-      let ihs ← collectIHs fn oldIH newIH body
-      ihs.mapM (mkLambdaFVars (usedOnly := true) xs ·)
+  if let .lam n t body bi := e then
+    let t' ← foldCalls fn oldIH t
+    return ← withLocalDecl n bi t' fun x => do
+      let ihs ← collectIHs fn oldIH newIH (body.instantiate1 x)
+      ihs.mapM (mkLambdaFVars (usedOnly := true) #[x])
 
   if let .mdata _m b := e then
     return ← collectIHs fn oldIH newIH b
