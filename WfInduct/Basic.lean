@@ -534,10 +534,10 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
 
     createHyp motiveFVar fn oldIH newIH toClear goal IHs e
   else if let .letE n t v b _ := e then
-    -- TODO: process t?
     let IHs := IHs ++ (← collectIHs fn oldIH newIH v)
+    let t' ← foldCalls fn oldIH t
     let v' ← foldCalls fn oldIH v
-    withLetDecl n t v' fun x => do
+    withLetDecl n t' v' fun x => do
       -- Should we keep let declaraions in the inductive theorem?
       -- If not, we can add them to `toClear`.
       let toClear := toClear.push x.fvarId!
@@ -545,9 +545,9 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       mkLetFVars #[x] b'
   else if let some (n, t, v, b) := e.letFun? then
     let IHs := IHs ++ (← collectIHs fn oldIH newIH v)
+    let t' ← foldCalls fn oldIH t
     let v' ← foldCalls fn oldIH v
-    -- TODO: process t?
-    withLocalDecl n .default t fun x => do
+    withLocalDecl n .default t' fun x => do
       -- Should we keep have declaraions in the inductive theorem?
       -- If not, we can add them to `toClear`.
       let toClear := toClear.push x.fvarId!
