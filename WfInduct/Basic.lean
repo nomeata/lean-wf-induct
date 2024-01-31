@@ -364,9 +364,9 @@ def assertIHs (vals : Array Expr) (mvarid : MVarId) : MetaM MVarId := do
 
 -- Base case: Introduce a new hyp
 def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear : Array FVarId)
-    (goal : Expr) (e : Expr) : MetaM Expr := do
+    (goal : Expr) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
   -- logInfo m!"Tail position {e}"
-  let IHs ← collectIHs fn oldIH newIH e
+  let IHs := IHs ++ (← collectIHs fn oldIH newIH e)
 
   -- deduplicatae IHs
   let IHs ← deduplicateIHs IHs
@@ -386,17 +386,17 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
   pure mvar
 
 partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Array FVarId)
-    (goal : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM Expr := do
+    (goal : Expr) (oldIH newIH : FVarId) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
   if e.isDIte then
     let #[_α, c, h, t, f] := e.getAppArgs | unreachable!
     -- TODO look for recursive calls in α, c, h
     let t' ← lambdaTelescope t fun args t => do
       -- TODO: Telescope only 1
-      let t' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH t
+      let t' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs t
       mkLambdaFVars args t'
     let f' ← lambdaTelescope f fun args f => do
       -- TODO: Telescope only 1
-      let f' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH f
+      let f' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs f
       mkLambdaFVars args f'
     let u ← getLevel goal
     return mkApp5 (mkConst ``dite [u]) goal c h t' f'
@@ -442,7 +442,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
             let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
               let #[newIH'] := newIH' | unreachable!
               -- logInfo m!"goal': {goal'}"
-              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! alt
+              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! IHs alt
               mkLambdaFVars #[newIH'] alt' -- x is the new argument we are adding to the alternative
             mkLambdaFVars xs alt'
           pure alt'
@@ -516,7 +516,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
             removeLamda alt fun oldIH' alt => do
               let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
                 let #[newIH'] := newIH' | unreachable!
-                let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! alt
+                let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! IHs alt
                 mkLambdaFVars #[newIH'] alt'
               mkLambdaFVars (ys ++ ys2) alt'
         auxType := b.instantiate1 alt'
@@ -532,27 +532,31 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
       return matcherApp'.toExpr
 
-    createHyp motiveFVar fn oldIH newIH toClear goal e
+    createHyp motiveFVar fn oldIH newIH toClear goal IHs e
   else if let .letE n t v b _ := e then
-    -- TODO: process t and b
-    withLetDecl n t v fun x => do
+    -- TODO: process t?
+    let IHs := IHs ++ (← collectIHs fn oldIH newIH v)
+    let v' ← foldCalls fn oldIH v
+    withLetDecl n t v' fun x => do
       -- Should we keep let declaraions in the inductive theorem?
       -- If not, we can add them to `toClear`.
       let toClear := toClear.push x.fvarId!
-      let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH (b.instantiate1 x)
+      let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs (b.instantiate1 x)
       mkLetFVars #[x] b'
   else if let some (n, t, v, b) := e.letFun? then
-    -- TODO: process t and b
+    let IHs := IHs ++ (← collectIHs fn oldIH newIH v)
+    let v' ← foldCalls fn oldIH v
+    -- TODO: process t?
     withLocalDecl n .default t fun x => do
       -- Should we keep have declaraions in the inductive theorem?
       -- If not, we can add them to `toClear`.
       let toClear := toClear.push x.fvarId!
-      let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH (b.instantiate1 x)
+      let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs (b.instantiate1 x)
       -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
-      mkLetFun x v b'
+      mkLetFun x v' b'
   else
     -- logInfo m!"Tail position at end of buildInductionBody: {e}"
-    createHyp motiveFVar fn oldIH newIH toClear goal e
+    createHyp motiveFVar fn oldIH newIH toClear goal IHs e
 
 partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
   lambdaTelescope e fun params body => do
@@ -593,7 +597,7 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
         -- open body with the same arg
         let body ← instantiateLambda body #[param]
         removeLamda body fun oldIH body => do
-          let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] (.app motive param) oldIH genIH.fvarId! body
+          let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] (.app motive param) oldIH genIH.fvarId! #[] body
           mkLambdaFVars #[param, genIH] body'
 
       let e' := mkAppN e' #[body', arg, acc]

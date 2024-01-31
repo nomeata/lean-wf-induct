@@ -385,3 +385,71 @@ info: AsPattern.bar.induct (motive : Nat → Prop)
 #check bar.induct
 
 end AsPattern
+
+namespace GramSchmidt
+
+-- this tried to repoduce a problem with gramSchmidt,
+-- with more proofs from `simp` abstracting over the IH.
+-- I couldn't quite reproduce it, but let's keep it.
+
+def below (n i : Nat) := i < n
+
+@[simp]
+def below_lt (n i : Nat) (h : below n i) : i < n := h
+
+def sum_below (n : Nat) (f : (i : Nat) → below n i → Nat) :=
+  match n with
+  | 0 => 0
+  | n+1 => sum_below n (fun i hi => f i (Nat.lt_succ_of_le (Nat.le_of_lt hi))) +
+          f n (Nat.lt_succ_self n)
+
+def foo (n : Nat) :=
+  1 + sum_below n (fun i _ => foo i)
+termination_by n
+decreasing_by
+  simp_wf
+  simp [below_lt, *]
+
+#derive_induction foo
+/--
+info: GramSchmidt.foo.induct (motive : Nat → Prop) (case1 : ∀ (x : Nat), (∀ (i : Nat), below x i → motive i) → motive x)
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+end GramSchmidt
+
+namespace LetFun
+
+def foo {α} (x : α) : List α → Nat
+  | .nil => 0
+  | .cons _y ys =>
+      let this := foo x ys
+      this
+termination_by xs => xs
+#derive_induction foo
+/--
+info: LetFun.foo.induct.{u_1} {α : Type u_1} (x : α) (motive : List α → Prop) (case1 : motive [])
+  (case2 : ∀ (_y : α) (ys : List α), motive ys → motive (_y :: ys)) (x : List α) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+
+def bar {α} (x : α) : List α → Nat
+  | .nil => 0
+  | .cons _y ys =>
+      have this := bar x ys
+      this
+termination_by xs => xs
+
+#derive_induction bar
+/--
+info: LetFun.bar.induct.{u_1} {α : Type u_1} (x : α) (motive : List α → Prop) (case1 : motive [])
+  (case2 : ∀ (_y : α) (ys : List α), motive ys → motive (_y :: ys)) (x : List α) : motive x
+-/
+#guard_msgs in
+#check bar.induct
+
+end LetFun
