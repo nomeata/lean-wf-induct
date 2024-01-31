@@ -115,6 +115,8 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
         let b' ← foldCalls fn oldIH (b.instantiate1 x)
         mkLetFun x v' b'
 
+    -- TODO: Need to remove the argument from match applications.
+
     if e.getAppArgs.any (·.isFVarOf oldIH) then
       -- Sometimes Fix.lean abstracts over oldIH in a proof definition.
       -- So beta-reduce that definition.
@@ -122,7 +124,7 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
       -- Need to look through theorems here!
       let e' ← withTransparency .all do whnf e
       if e == e' then
-        throwError "process: cannot reduce application of {e.getAppFn}"
+        throwError "foldCalls: cannot reduce application of {e.getAppFn} in {indentExpr e} "
       return ← foldCalls fn oldIH e'
 
     if let .app e1 e2 := e then
@@ -182,7 +184,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       return ihs1 ++ ihs2
 
   if let some matcherApp ← matchMatcherApp? e then
-    -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
+    -- logInfo m!"{matcherApp.matcherName} {Expr.fvar oldIH}/{Expr.fvar newIH} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
       let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
         unless motiveArgs.size == matcherApp.discrs.size do
@@ -324,7 +326,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
     -- Need to look through theorems here!
     let e' ← withTransparency .all do whnf e
     if e == e' then
-      throwError "process: cannot reduce application of {e.getAppFn}"
+      throwError "collectIHs: cannot reduce application of {e.getAppFn} in {indentExpr e} "
     return ← collectIHs fn oldIH newIH e'
 
   if e.getAppArgs.any (·.isFVarOf oldIH) then
