@@ -298,10 +298,23 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       return #[ matcherApp'.toExpr ]
 
   if e.getAppArgs.any (·.isFVarOf oldIH) then
+    -- Sometimes Fix.lean abstracts over oldIH in a proof definition.
+    -- So beta-reduce that definition.
+
+    -- Need to look through theorems here!
+    let e' ← withTransparency .all do whnf e
+    if e == e' then
+      throwError "process: cannot reduce application of {e.getAppFn}"
+    return ← collectIHs fn oldIH newIH e'
+
+  if e.getAppArgs.any (·.isFVarOf oldIH) then
     throwError "collectIHs: could not collect recursive calls from call {indentExpr e}"
 
   if let .app e1 e2 := e then
     return (← collectIHs fn oldIH newIH e1) ++ (← collectIHs fn oldIH newIH e2)
+
+  if let .proj _ _ e := e then
+    return ← collectIHs fn oldIH newIH e
 
   if e.isForall then
     -- TODO: Fold calls in types here?
