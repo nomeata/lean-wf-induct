@@ -4,6 +4,57 @@ set_option autoImplicit false
 
 open Lean Elab Command Meta
 
+-- Just a wrapper that implements local context hygiene, to be upstreamed
+open Match in
+partial def forallAltTelescope {α} (altType : Expr) (altNumParams numDiscrEqs : Nat)
+    (k : (ys : Array Expr) → (eqs : Array Expr) → (args : Array Expr) → (mask : Array Bool) → (type : Expr) → MetaM α)
+    : MetaM α := do
+  go #[] #[] #[] #[] 0 altType
+where
+  go (ys : Array Expr) (eqs : Array Expr) (args : Array Expr) (mask : Array Bool) (i : Nat) (type : Expr) : MetaM α := do
+    let type ← whnfForall type
+    if i < altNumParams then
+      let Expr.forallE n d b .. := type
+        | throwError "expecting {altNumParams} parameters, including {numDiscrEqs} equalities, but found type{indentExpr altType}"
+      if i < altNumParams - numDiscrEqs then
+        let d ← unfoldNamedPattern d
+        withLocalDeclD n d fun y => do
+          let typeNew := b.instantiate1 y
+          if let some (_, lhs, rhs) ← matchEq? d then
+            if lhs.isFVar && ys.contains lhs && args.contains lhs && Lean.Meta.Match.forallAltTelescope.isNamedPatternProof typeNew y then
+               let some j  := ys.getIdx? lhs | unreachable!
+               let ys      := ys.eraseIdx j
+               let some k  := args.getIdx? lhs | unreachable!
+               let mask    := mask.set! k false
+               let args    := args.map fun arg => if arg == lhs then rhs else arg
+               let arg     ← mkEqRefl rhs
+               let typeNew := typeNew.replaceFVar lhs rhs
+               return ← withReader (fun ctx => { ctx with
+                  lctx := ctx.lctx.replaceFVarId lhs.fvarId! rhs
+                    |>.replaceFVarId y.fvarId! arg
+                }) do
+                return (← go ys eqs (args.push arg) (mask.push false) (i+1) typeNew)
+          go (ys.push y) eqs (args.push y) (mask.push true) (i+1) typeNew
+      else
+        let arg ← if let some (_, _, rhs) ← matchEq? d then
+          mkEqRefl rhs
+        else if let some (_, _, _, rhs) ← matchHEq? d then
+          mkHEqRefl rhs
+        else
+          throwError "unexpected match alternative type{indentExpr altType}"
+        withLocalDeclD n d fun eq => do
+          let typeNew := b.instantiate1 eq
+          go ys (eqs.push eq) (args.push arg) (mask.push false) (i+1) typeNew
+    else
+      let type ← unfoldNamedPattern type
+      /- Recall that alternatives that do not have variables have a `Unit` parameter to ensure
+         they are not eagerly evaluated. -/
+      if ys.size == 1 then
+        if (← inferType ys[0]!).isConstOf ``Unit && !(← dependsOn type ys[0]!.fvarId!) then
+          return (← k #[] #[] #[mkConst ``Unit.unit] #[false] type)
+      k ys eqs args mask type
+
+
 
 -- From PackDomain
 private partial def mkPSigmaCasesOn (y : Expr) (codomain : Expr) (xs : Array Expr) (value : Expr) : MetaM Expr := do
@@ -163,6 +214,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
         auxType := b.instantiate1 dummy -- ugh, what to instantiate here? Lets hope they are unused
         altIHs := altIHs.push altIH
 
+
       -- Now figure out the actual motive, with an explicit match
       let motive'' ← lambdaTelescope motive' fun motiveArgs motiveBody => do
         let some (extra, _dummy) := motiveBody.arrow? |
@@ -202,25 +254,30 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
         splitterNumParams in matchEqns.splitterAltNumParams,
         numParams in matcherApp.altNumParams do
         let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
-        let finalAlt ← forallBoundedTelescope d (some (splitterNumParams+1)) fun xs d => do
-          -- Skip the splitter arguments
-          let altArgs := xs[:numParams] ++ xs[splitterNumParams:]
-          let alt ← try instantiateLambda alt altArgs
-            catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
-          let altType ← inferType alt
-          let expType := d
-          let eq ← mkEq expType altType
-          let proof ← mkFreshExprSyntheticOpaqueMVar eq
-          let goal := proof.mvarId!
-          -- logInfo m!"Goal: {goal}"
-          let goal ← Split.simpMatchTarget goal
-          -- logInfo m!"Goal after splitting: {goal}"
-          try
-            goal.refl
-          catch _ =>
-            logInfo m!"Cannot cloal goal after splitting: {goal}"
-            goal.admit
-          mkLambdaFVars xs (← mkEqMPR proof alt)
+
+        let finalAlt ← forallAltTelescope (← inferType alt) numParams 0 fun ys _eqs args _mask _bodyType => do
+          let d ← instantiateForall d ys
+          forallBoundedTelescope d (splitterNumParams - ys.size) fun ys2 d => do
+            forallBoundedTelescope d (some 1) fun newIH' d => do
+              let #[newIH'] := newIH' | unreachable!
+
+              -- logInfo m!"ys: {ys} args: {args} eqs: {_eqs} ys2: {ys2} splitterNumParams: {splitterNumParams}"
+              let alt ← try instantiateLambda alt (args.push newIH') catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
+
+              let altType ← inferType alt
+              let expType := d
+              let eq ← mkEq expType altType
+              let proof ← mkFreshExprSyntheticOpaqueMVar eq
+              let goal := proof.mvarId!
+              -- logInfo m!"Goal: {goal}"
+              let goal ← Split.simpMatchTarget goal
+              -- logInfo m!"Goal after splitting: {goal}"
+              try
+                goal.refl
+              catch _ =>
+                logInfo m!"Cannot close goal after splitting: {goal}"
+                goal.admit
+              mkLambdaFVars (ys ++ ys2 ++ #[newIH']) (← mkEqMPR proof alt)
         -- logInfo m!"Wrapped IH: {finalAlt}"
         let dummy := mkSort levelZero
         auxType := b.instantiate1 dummy -- ugh, what to instantiate here? Lets hope they are unused
@@ -435,18 +492,20 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
           numParams in matcherApp.altNumParams,
           splitterNumParams in matchEqns.splitterAltNumParams do
         let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
-        let alt' ← forallBoundedTelescope d (some splitterNumParams) fun xs d => do
-          -- Here we assume that the splitter's alternatives parameters are an _extension_
-          -- of the matcher's alternative parameters.
-          let alt ← try instantiateLambda alt xs[:numParams] catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
-          let alt' ← removeLamda alt fun oldIH' alt => do
-            let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
-              let #[newIH'] := newIH' | unreachable!
-              -- logInfo m!"goal': {goal'}"
-              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! alt
-              mkLambdaFVars #[newIH'] alt'
-            mkLambdaFVars xs alt'
-          pure alt'
+        -- let alt' ← forallBoundedTelescope d (some splitterNumParams) fun xs d => do
+        let alt' ← forallAltTelescope (← inferType alt) numParams 0 fun ys _eqs args _mask _bodyType => do
+          let d ← instantiateForall d ys
+          forallBoundedTelescope d (splitterNumParams - ys.size) fun ys2 d => do
+            -- logInfo m!"ys: {ys} args: {args} eqs: {_eqs} ys2: {ys2} splitterNumParams: {splitterNumParams}"
+            -- Here we assume that the splitter's alternatives parameters are an _extension_
+            -- of the matcher's alternative parameters.
+            let alt ← try instantiateLambda alt args catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
+            removeLamda alt fun oldIH' alt => do
+              let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
+                let #[newIH'] := newIH' | unreachable!
+                let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! alt
+                mkLambdaFVars #[newIH'] alt'
+              mkLambdaFVars (ys ++ ys2) alt'
         auxType := b.instantiate1 alt'
         alts' := alts'.push alt'
       let matcherApp' := { matcherApp with

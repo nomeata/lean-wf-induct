@@ -343,3 +343,45 @@ theorem match_non_tail_eq_true (n : Nat) : match_non_tail n = true := by
     split <;> dsimp at IH <;> simp [IH]
 
 end NonTailrecMatch
+
+
+namespace AsPattern
+
+def foo (n : Nat) :=
+  match n with
+  | 0 => 0
+  | x@(n+1) => x + foo n
+termination_by n
+#derive_induction foo
+
+/--
+info: AsPattern.foo.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : ∀ (n : Nat), motive n → motive (Nat.succ n))
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+
+
+def bar (n : Nat) :=
+  1 +
+  match n with
+  | 0 => 0
+  | x@(n+1) => x + bar n
+termination_by n
+#derive_induction bar
+
+/--
+info: AsPattern.bar.induct (motive : Nat → Prop)
+  (case1 :
+    ∀ (x : Nat),
+      (match x with
+        | 0 => True
+        | x@h:(Nat.succ n) => motive n ∧ True) →
+        motive x)
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check bar.induct
+
+end AsPattern
