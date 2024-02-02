@@ -437,8 +437,6 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
     (goal : Expr) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
   -- logInfo m!"Tail position {e}"
   let IHs := IHs ++ (← collectIHs fn oldIH newIH e)
-
-  -- deduplicatae IHs
   let IHs ← deduplicateIHs IHs
 
   let mvar ← mkFreshExprSyntheticOpaqueMVar goal (tag := `hyp)
@@ -601,31 +599,31 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
       return matcherApp'.toExpr
 
-    createHyp motiveFVar fn oldIH newIH toClear goal IHs e
-  else if let .letE n t v b _ := e then
+  if let .letE n t v b _ := e then
     let IHs := IHs ++ (← collectIHs fn oldIH newIH v)
     let t' ← foldCalls fn oldIH t
     let v' ← foldCalls fn oldIH v
-    withLetDecl n t' v' fun x => do
+    return ← withLetDecl n t' v' fun x => do
       -- Should we keep let declaraions in the inductive theorem?
       -- If not, we can add them to `toClear`.
       let toClear := toClear.push x.fvarId!
       let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs (b.instantiate1 x)
       mkLetFVars #[x] b'
-  else if let some (n, t, v, b) := e.letFun? then
+
+  if let some (n, t, v, b) := e.letFun? then
     let IHs := IHs ++ (← collectIHs fn oldIH newIH v)
     let t' ← foldCalls fn oldIH t
     let v' ← foldCalls fn oldIH v
-    withLocalDecl n .default t' fun x => do
+    return ← withLocalDecl n .default t' fun x => do
       -- Should we keep have declaraions in the inductive theorem?
       -- If not, we can add them to `toClear`.
       let toClear := toClear.push x.fvarId!
       let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs (b.instantiate1 x)
       -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
       mkLetFun x v' b'
-  else
-    -- logInfo m!"Tail position at end of buildInductionBody: {e}"
-    createHyp motiveFVar fn oldIH newIH toClear goal IHs e
+
+  -- logInfo m!"Tail position at end of buildInductionBody: {e}"
+  createHyp motiveFVar fn oldIH newIH toClear goal IHs e
 
 partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
   lambdaTelescope e fun params body => do
