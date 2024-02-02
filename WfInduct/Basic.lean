@@ -4,6 +4,16 @@ set_option autoImplicit false
 
 open Lean Elab Command Meta
 
+/--
+Removes `fvarId` from the local context, and replaces occurrences of it with `e`.
+It is the responsibility of the caller to ensure that `e` is well-typed in the context
+of any occurrence of `fvarId`.
+-/
+def Lean.Meta.withReplaceFVarId {α} (fvarId : FVarId) (e : Expr) : MetaM α → MetaM α :=
+  withReader fun ctx => { ctx with
+    lctx := ctx.lctx.replaceFVarId fvarId e
+    localInstances := ctx.localInstances.erase fvarId }
+
 -- Just a wrapper that implements local context hygiene, to be upstreamed
 open Match in
 partial def forallAltTelescope {α} (altType : Expr) (altNumParams numDiscrEqs : Nat)
@@ -29,11 +39,9 @@ where
                let args    := args.map fun arg => if arg == lhs then rhs else arg
                let arg     ← mkEqRefl rhs
                let typeNew := typeNew.replaceFVar lhs rhs
-               return ← withReader (fun ctx => { ctx with
-                  lctx := ctx.lctx.replaceFVarId lhs.fvarId! rhs
-                    |>.replaceFVarId y.fvarId! arg
-                }) do
-                return (← go ys eqs (args.push arg) (mask.push false) (i+1) typeNew)
+               return ← withReplaceFVarId lhs.fvarId! rhs do
+                withReplaceFVarId y.fvarId! arg do
+                  go ys eqs (args.push arg) (mask.push false) (i+1) typeNew
           go (ys.push y) eqs (args.push y) (mask.push true) (i+1) typeNew
       else
         let arg ← if let some (_, _, rhs) ← matchEq? d then
