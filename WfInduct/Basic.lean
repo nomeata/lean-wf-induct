@@ -222,9 +222,9 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
   if let some (n, t, v, b) := e.letFun? then
     let ihs1 ← collectIHs fn oldIH newIH v
     let v' ← foldCalls fn oldIH v
-    return ← withLocalDecl n .default t fun x => do
+    return ← withLetDecl n t v' fun x => do
       let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
-      let ihs2 ← ihs2.mapM (mkLetFun x v' ·)
+      let ihs2 ← ihs2.mapM (mkLetFVars (usedLetOnly := true) #[x] ·)
       return ihs1 ++ ihs2
 
   if let some matcherApp ← matchMatcherApp? e then
