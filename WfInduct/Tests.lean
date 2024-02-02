@@ -473,4 +473,22 @@ info: RecCallInDisrs.foo.induct (motive : Nat → Prop) (case1 : motive 0)
 #guard_msgs in
 #check foo.induct
 
+
+def bar : Nat → Nat
+  | 0 => 0
+  | n+1 => match h₁ : n, bar n with
+    | 0, 0 => 0
+    | 0, _ => 1 -- Bug: The information bar n ≠ 0 is lost here
+    | m+1, _ => bar m
+termination_by n => n
+#derive_induction bar
+
+/--
+info: RecCallInDisrs.bar.induct (motive : Nat → Prop) (case1 : motive 0)
+  (case2 case3 : ∀ (n : Nat), n = 0 → motive n → motive (Nat.succ 0))
+  (case4 : ∀ (n m : Nat), n = Nat.succ m → motive n → motive m → motive (Nat.succ (Nat.succ m))) (x : Nat) : motive x
+-/
+#guard_msgs in
+#check bar.induct
+
 end RecCallInDisrs

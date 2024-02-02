@@ -447,7 +447,7 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
   for fv in toClear do
     mvarId ← mvarId.tryClear fv
   -- logInfo m!"New hyp 3 {mvarId}"
-  mvarId ← mvarId.cleanup
+  mvarId ← mvarId.cleanup -- TODO: Without this I sometimes get an unknown local variable, which is fishy
   let (_, _mvarId) ← mvarId.revertAfter motiveFVar
   let mvar ← instantiateMVars mvar
   -- logInfo <| m!"New hyp {_mvarId}" ++ Format.line ++ m!"used as {mvar}"
@@ -533,6 +533,21 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
   if let some matcherApp ← matchMatcherApp? e then
     -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
+
+      -- Fold recursive calls in params and discrs, and collect IHs
+      let mut IHs := IHs
+      for param in matcherApp.params do
+        IHs := IHs ++ (← collectIHs fn oldIH newIH param)
+      let params' ← matcherApp.params.mapM (foldCalls fn oldIH)
+      for discr in matcherApp.discrs do
+        IHs := IHs ++ (← collectIHs fn oldIH newIH discr)
+      let discrs' ← matcherApp.discrs.mapM (foldCalls fn oldIH)
+
+      -- TODO: Include discrEq info in MatcherApp
+      let .some matcherInfo ← getMatcherInfo? matcherApp.matcherName
+        | throwError "matcher {matcherApp.matcherName} has no MatchInfo found"
+      let numDiscrEqs := matcherInfo.getNumDiscrEqs
+
       let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs _motiveBody => do
         unless motiveArgs.size == matcherApp.discrs.size do
           throwError "unexpected matcher application, motive must be lambda expression with #{matcherApp.discrs.size} arguments"
@@ -565,9 +580,9 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       let matchEqns ← Match.getEquationsFor matcherApp.matcherName
       let splitter := matchEqns.splitterName
 
-      let aux := mkAppN (mkConst splitter matcherLevels.toList) matcherApp.params
+      let aux := mkAppN (mkConst splitter matcherLevels.toList) params'
       let aux := mkApp aux motive'
-      let aux := mkAppN aux matcherApp.discrs
+      let aux := mkAppN aux discrs'
       unless (← isTypeCorrect aux) do
         throwError "failed to add argument to matcher application, type error when constructing the new motive"
       let altTypes ← arrowDomainsN matcherApp.alts.size (← inferType aux)
@@ -578,26 +593,32 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
           splitterNumParams in matchEqns.splitterAltNumParams,
           altType in altTypes do
         -- let alt' ← forallBoundedTelescope d (some splitterNumParams) fun xs d => do
-        let alt' ← forallAltTelescope (← inferType alt) numParams 0 fun ys _eqs args _mask _bodyType => do
+        let alt' ← forallAltTelescope (← inferType alt) (numParams - numDiscrEqs) 0 fun ys _eqs args _mask _bodyType => do
           let d ← instantiateForall altType ys
+          -- The splitter inserts its extra paramters after the first ys.size parameters, before
+          -- the parameters for the numDiscrEqs
           forallBoundedTelescope d (splitterNumParams - ys.size) fun ys2 d => do
             -- logInfo m!"ys: {ys} args: {args} eqs: {_eqs} ys2: {ys2} splitterNumParams: {splitterNumParams}"
             -- Here we assume that the splitter's alternatives parameters are an _extension_
             -- of the matcher's alternative parameters.
             let alt ← try instantiateLambda alt args catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
-            removeLamda alt fun oldIH' alt => do
-              let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
-                let #[newIH'] := newIH' | unreachable!
-                let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! IHs alt
-                mkLambdaFVars #[newIH'] alt'
-              mkLambdaFVars (ys ++ ys2) alt'
+            forallBoundedTelescope d numDiscrEqs fun ys3 d => do
+              let alt ← try instantiateLambda alt ys3 catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
+              removeLamda alt fun oldIH' alt => do
+                let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
+                  let #[newIH'] := newIH' | unreachable!
+                  let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! IHs alt
+                  mkLambdaFVars #[newIH'] alt'
+                mkLambdaFVars (ys ++ ys2 ++ ys3) alt'
         alts' := alts'.push alt'
       let matcherApp' := { matcherApp with
-        matcherName   := splitter,
-        matcherLevels := matcherLevels,
-        motive        := motive',
-        alts          := alts',
-        remaining     := matcherApp.remaining.set! 0 (.fvar newIH)
+        matcherName   := splitter
+        matcherLevels := matcherLevels
+        params        := params'
+        motive        := motive'
+        discrs        := discrs'
+        alts          := alts'
+        remaining     := #[.fvar newIH]
       }
       -- check matcherApp'.toExpr
       -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
