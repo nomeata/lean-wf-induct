@@ -288,29 +288,15 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
     if let some matcherApp ← matchMatcherApp? e then
       -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
       if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
-        let motive' ← lambdaTelescope matcherApp.motive fun motiveArgs motiveBody => do
-          unless motiveArgs.size == matcherApp.discrs.size do
-            throwError "unexpected matcher application, motive must be lambda expression with #{matcherApp.discrs.size} arguments"
-          -- TODO: Also fold in body of the motive?
-          let some (_extra, body) := motiveBody.arrow? | throwError "motive not an arrow"
-          mkLambdaFVars motiveArgs body
-
-        let mut alts' : Array Expr := #[]
-        for alt in matcherApp.alts, numParams in matcherApp.altNumParams do
-          let alt' ← lambdaTelescope alt fun xs alt => do
-            unless xs.size = numParams + 1 do
-              throwError "unexpected matcher application, alternative must be lambda expression with #{numParams + 1} arguments"
-            let alt ← foldCalls fn (xs.back.fvarId!) alt
-            mkLambdaFVars xs.pop alt
-          alts' := alts'.push alt'
-
-        let matcherApp' := { matcherApp with
-          motive        := motive'
-          alts          := alts'
-          remaining     := #[]
-        }
-        -- check matcherApp'.toExpr
-        -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
+        let matcherApp' ← matcherApp.transform
+          (onParams := foldCalls fn oldIH)
+          (onMotive := fun _motiveArgs motiveBody => do
+            let some (_extra, body) := motiveBody.arrow? | throwError "motive not an arrow"
+            foldCalls fn oldIH body)
+          (onAlt := fun _altType alt => do
+            removeLamda alt fun oldIH alt => do
+              foldCalls fn oldIH alt)
+          (onRemaining := fun _ => pure #[])
         return matcherApp'.toExpr
 
     if e.getAppArgs.any (·.isFVarOf oldIH) then
