@@ -59,7 +59,9 @@ where
          they are not eagerly evaluated. -/
       if ys.size == 1 then
         if (← inferType ys[0]!).isConstOf ``Unit && !(← dependsOn type ys[0]!.fvarId!) then
-          return (← k #[] #[] #[mkConst ``Unit.unit] #[false] type)
+          let rhs := mkConst ``Unit.unit
+          return ← withReplaceFVarId ys[0]!.fvarId! rhs do
+          return (← k #[] #[] #[rhs] #[false] type)
       k ys eqs args mask type
 
 
@@ -447,7 +449,7 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
   for fv in toClear do
     mvarId ← mvarId.tryClear fv
   -- logInfo m!"New hyp 3 {mvarId}"
-  mvarId ← mvarId.cleanup -- TODO: Without this I sometimes get an unknown local variable, which is fishy
+  mvarId ← mvarId.cleanup
   let (_, _mvarId) ← mvarId.revertAfter motiveFVar
   let mvar ← instantiateMVars mvar
   -- logInfo <| m!"New hyp {_mvarId}" ++ Format.line ++ m!"used as {mvar}"
