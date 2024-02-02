@@ -306,7 +306,8 @@ namespace NonTailrecMatch
 def match_non_tail (n : Nat ) : Bool :=
   n = 42 || match n with
   | 0 => true
-  | n+1 => match_non_tail n
+  | 1 => true
+  | n+2 => match_non_tail n && match_non_tail (n+1)
 termination_by n
 
 def match_non_tail_induct
@@ -328,7 +329,8 @@ info: NonTailrecMatch.match_non_tail.induct (motive : Nat → Prop)
     ∀ (x : Nat),
       (match x with
         | 0 => True
-        | Nat.succ n => motive n ∧ True) →
+        | 1 => True
+        | Nat.succ (Nat.succ n) => motive n ∧ motive (n + 1)) →
         motive x)
   (x : Nat) : motive x
 -/
@@ -377,7 +379,7 @@ info: AsPattern.bar.induct (motive : Nat → Prop)
     ∀ (x : Nat),
       (match x with
         | 0 => True
-        | x@h:(Nat.succ n) => motive n ∧ True) →
+        | x@h:(Nat.succ n) => motive n) →
         motive x)
   (x : Nat) : motive x
 -/

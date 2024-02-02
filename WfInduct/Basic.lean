@@ -194,6 +194,17 @@ def arrowDomainsN (n : Nat) (type : Expr) : MetaM (Array Expr) := do
     type := β
   return ts
 
+/--
+Given proofs of `P₁`, …, `Pₙ`, returns a proof of `P₁ ∧ … ∧ Pₙ`.
+If `n = 0` returns a proof of `True`.
+If `n = 1` returns the proof of `P₁`.
+-/
+def mkAndIntroN : Array Expr → MetaM Expr
+| #[] => return mkConst ``True.intro []
+| #[e] => return e
+| es => es.foldrM (start := es.size - 1) (fun a b => mkAppM ``And.intro #[a,b]) es.back
+
+
 -- Non-tail-positions: Collect induction hypotheses
 -- (TODO: Worth folding with `foldCalls`, like before?)
 -- (TODO: Accumulated with a left fold)
@@ -273,7 +284,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
             forallBoundedTelescope altType (some 1) fun newIH' _goal' => do
               let #[newIH'] := newIH' | unreachable!
               let altIHs ← collectIHs fn oldIH' newIH'.fvarId! alt
-              let altIH ← altIHs.foldrM (fun a b => mkAppM ``And.intro #[a,b]) (Expr.const ``True.intro [])
+              let altIH ← mkAndIntroN altIHs
               mkLambdaFVars #[newIH'] altIH
           mkLambdaFVars xs altIH
         altIHs := altIHs.push altIH

@@ -30,11 +30,11 @@ info: levelGeq.induct (motive : Level → Level → Prop)
     ∀ (fst snd : Level),
       (match fst, snd with
         | x, Level.zero => True
-        | u, Level.max v₁ v₂ => motive u v₁ ∧ motive u v₂ ∧ True
-        | Level.max u₁ u₂, v => motive u₁ v ∧ motive u₂ v ∧ True
-        | u, Level.imax v₁ v₂ => motive u v₁ ∧ motive u v₂ ∧ True
-        | Level.imax a u₂, v => motive u₂ v ∧ True
-        | Level.succ u, Level.succ v => motive u v ∧ True
+        | u, Level.max v₁ v₂ => motive u v₁ ∧ motive u v₂
+        | Level.max u₁ u₂, v => motive u₁ v ∧ motive u₂ v
+        | u, Level.imax v₁ v₂ => motive u v₁ ∧ motive u v₂
+        | Level.imax a u₂, v => motive u₂ v
+        | Level.succ u, Level.succ v => motive u v
         | x, x_1 => True) →
         motive fst snd)
   (u v : Level) : motive u v
