@@ -615,21 +615,14 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
         (onParams := foldCalls fn oldIH)
         (onMotive := fun xs _body => do
           -- Remove the old IH that was added in mkFix
-          -- TODO: mkArrow first, then only one loop over the discrs
           let eType ← newIH.getType
-          let eTypeAbst ← matcherApp.discrs.size.foldRevM (init := eType) fun i eTypeAbst => do
+          let motiveBody ← mkArrow eType goal
+          -- TODO: Extract the following idiom
+          matcherApp.discrs.size.foldRevM (init := motiveBody) fun i motiveBodyAbst => do
             let motiveArg := xs[i]!
             let discr     := matcherApp.discrs[i]!
-            let eTypeAbst ← kabstract eTypeAbst discr
-            return eTypeAbst.instantiate1 motiveArg
-
-          let goalAbst ← matcherApp.discrs.size.foldRevM (init := goal) fun i goalAbst => do
-            let motiveArg := xs[i]!
-            let discr     := matcherApp.discrs[i]!
-            let goalAbst ← kabstract goalAbst discr
-            return goalAbst.instantiate1 motiveArg
-
-          mkArrow eTypeAbst goalAbst)
+            let motiveBodyAbst ← kabstract motiveBodyAbst discr
+            return motiveBodyAbst.instantiate1 motiveArg)
         (onAlt := fun expAltType alt => do
           removeLamda alt fun oldIH' alt => do
             forallBoundedTelescope expAltType (some 1) fun newIH' goal' => do
