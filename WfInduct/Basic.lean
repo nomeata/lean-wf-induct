@@ -79,7 +79,6 @@ private partial def mkPSigmaCasesOn (y : Expr) (codomain : Expr) (xs : Array Exp
   go mvar.mvarId! y.fvarId! #[]
   instantiateMVars mvar
 
--- #check WellFounded.fixF
 
 /-- Opens the body of a lambda, _without_ putting the free variable into the local context.
 This is used when replacing that paramters with a different expression.
@@ -90,11 +89,6 @@ def removeLamda {α} (e : Expr) (k : FVarId → Expr →  MetaM α) : MetaM α :
   let b := b.instantiate1 (.fvar x)
   k x b
 
-def mapWriter {σ α m} [Monad m] (f : σ → m σ) (k : StateT (Array σ) m α) : StateT (Array σ) m α := do
-  fun s₁ => do
-    let (a, s₂) ← k #[]
-    let s₂' ← s₂.mapM f
-    pure (a, s₁ ++ s₂')
 
 -- Replace calls to oldIH back to calls to the original function. At the end,
 -- oldIH better be unused
@@ -184,6 +178,22 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
     throwError "foldCalls: failed to eliminate {mkFVar oldIH} from {indentExpr r}"
   return r
 
+/--
+Given `n` and a type `α₁ → α₂ → ... → αₙ → Sort u`, returns the types `α₁, α₂, ..., αₙ`.
+
+This can be used to infer the expected type of the alternatives when constructing a `MatcherApp`.
+-/
+def arrowDomainsN (n : Nat) (type : Expr) : MetaM (Array Expr) := do
+  let mut type := type
+  let mut ts := #[]
+  for i in [:n] do
+    type ← whnfForall type
+    let Expr.forallE _ α β _ ← pure type | throwError "expected {n} arguments, got {i}"
+    if β.hasLooseBVars then throwError "unexpected dependent type"
+    ts := ts.push α
+    type := β
+  return ts
+
 -- Non-tail-positions: Collect induction hypotheses
 -- (TODO: Worth folding with `foldCalls`, like before?)
 -- (TODO: Accumulated with a left fold)
@@ -251,25 +261,22 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       let aux := mkAppN aux matcherApp.discrs
       unless (← isTypeCorrect aux) do
         throwError "failed to add argument to matcher application, type error when constructing the new motive"
-      let mut auxType ← inferType aux
+      let altTypes ← arrowDomainsN matcherApp.alts.size (← inferType aux)
 
       let mut altIHs : Array Expr := #[]
       for alt in matcherApp.alts,
-          numParams in matcherApp.altNumParams do
-        let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
-        let altIH ← forallBoundedTelescope d (some numParams) fun xs d => do
+          numParams in matcherApp.altNumParams,
+          altType in altTypes do
+        let altIH ← forallBoundedTelescope altType (some numParams) fun xs altType => do
           let alt ← try instantiateLambda alt xs[:numParams] catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
           let altIH ← removeLamda alt fun oldIH' alt => do
-            forallBoundedTelescope d (some 1) fun newIH' _goal' => do
+            forallBoundedTelescope altType (some 1) fun newIH' _goal' => do
               let #[newIH'] := newIH' | unreachable!
               let altIHs ← collectIHs fn oldIH' newIH'.fvarId! alt
               let altIH ← altIHs.foldrM (fun a b => mkAppM ``And.intro #[a,b]) (Expr.const ``True.intro [])
               mkLambdaFVars #[newIH'] altIH
           mkLambdaFVars xs altIH
-        let dummy := mkSort levelZero
-        auxType := b.instantiate1 dummy -- ugh, what to instantiate here? Lets hope they are unused
         altIHs := altIHs.push altIH
-
 
       -- Now figure out the actual motive, with an explicit match
       let motive'' ← lambdaTelescope motive' fun motiveArgs motiveBody => do
@@ -303,26 +310,24 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       let aux := mkAppN aux matcherApp.discrs
       unless (← isTypeCorrect aux) do
         throwError "matcher with final motive is not type correct"
-      auxType ← inferType aux
+      let altTypes ← arrowDomainsN matcherApp.alts.size (← inferType aux)
 
       let mut finalAlts := #[]
       for alt in altIHs,
         splitterNumParams in matchEqns.splitterAltNumParams,
-        numParams in matcherApp.altNumParams do
-        let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
-
+        numParams in matcherApp.altNumParams,
+        expAltType in altTypes do
         let finalAlt ← forallAltTelescope (← inferType alt) numParams 0 fun ys _eqs args _mask _bodyType => do
-          let d ← instantiateForall d ys
-          forallBoundedTelescope d (splitterNumParams - ys.size) fun ys2 d => do
-            forallBoundedTelescope d (some 1) fun newIH' d => do
+          let expAltType ← instantiateForall expAltType ys
+          forallBoundedTelescope expAltType (splitterNumParams - ys.size) fun ys2 expAltType => do
+            forallBoundedTelescope expAltType (some 1) fun newIH' expAltType => do
               let #[newIH'] := newIH' | unreachable!
 
               -- logInfo m!"ys: {ys} args: {args} eqs: {_eqs} ys2: {ys2} splitterNumParams: {splitterNumParams}"
               let alt ← try instantiateLambda alt (args.push newIH') catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
 
               let altType ← inferType alt
-              let expType := d
-              let eq ← mkEq expType altType
+              let eq ← mkEq expAltType altType
               let proof ← mkFreshExprSyntheticOpaqueMVar eq
               let goal := proof.mvarId!
               -- logInfo m!"Goal: {goal}"
@@ -335,8 +340,6 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
                 goal.admit
               mkLambdaFVars (ys ++ ys2 ++ #[newIH']) (← mkEqMPR proof alt)
         -- logInfo m!"Wrapped IH: {finalAlt}"
-        let dummy := mkSort levelZero
-        auxType := b.instantiate1 dummy -- ugh, what to instantiate here? Lets hope they are unused
         finalAlts := finalAlts.push finalAlt
 
       -- logInfo m!"Inferred motive for match-in-types: {indentExpr motive''}"
@@ -554,16 +557,16 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
       let aux := mkAppN aux matcherApp.discrs
       unless (← isTypeCorrect aux) do
         throwError "failed to add argument to matcher application, type error when constructing the new motive"
-      let mut auxType ← inferType aux
+      let altTypes ← arrowDomainsN matcherApp.alts.size (← inferType aux)
 
       let mut alts' := #[]
       for alt in matcherApp.alts,
           numParams in matcherApp.altNumParams,
-          splitterNumParams in matchEqns.splitterAltNumParams do
-        let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
+          splitterNumParams in matchEqns.splitterAltNumParams,
+          altType in altTypes do
         -- let alt' ← forallBoundedTelescope d (some splitterNumParams) fun xs d => do
         let alt' ← forallAltTelescope (← inferType alt) numParams 0 fun ys _eqs args _mask _bodyType => do
-          let d ← instantiateForall d ys
+          let d ← instantiateForall altType ys
           forallBoundedTelescope d (splitterNumParams - ys.size) fun ys2 d => do
             -- logInfo m!"ys: {ys} args: {args} eqs: {_eqs} ys2: {ys2} splitterNumParams: {splitterNumParams}"
             -- Here we assume that the splitter's alternatives parameters are an _extension_
@@ -575,7 +578,6 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
                 let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! IHs alt
                 mkLambdaFVars #[newIH'] alt'
               mkLambdaFVars (ys ++ ys2) alt'
-        auxType := b.instantiate1 alt'
         alts' := alts'.push alt'
       let matcherApp' := { matcherApp with
         matcherName   := splitter,
