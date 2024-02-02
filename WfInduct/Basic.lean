@@ -455,19 +455,23 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
 
 partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Array FVarId)
     (goal : Expr) (oldIH newIH : FVarId) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
+  -- logInfo m!"buildInductionBody:{indentExpr e}"
+
   if e.isDIte then
     let #[_α, c, h, t, f] := e.getAppArgs | unreachable!
-    -- TODO look for recursive calls in α, c, h
-    let t' ← lambdaTelescope t fun args t => do
-      -- TODO: Telescope only 1
+    let IHs := IHs ++ (← collectIHs fn oldIH newIH c)
+    let c' ← foldCalls fn oldIH c
+    let h' ← foldCalls fn oldIH h
+    let t' ← withLocalDecl `h .default c' fun h => do
+      let t ← instantiateLambda t #[h]
       let t' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs t
-      mkLambdaFVars args t'
-    let f' ← lambdaTelescope f fun args f => do
-      -- TODO: Telescope only 1
+      mkLambdaFVars #[h] t'
+    let f' ← withLocalDecl `h .default (mkNot c') fun h => do
+      let f ← instantiateLambda f #[h]
       let f' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs f
-      mkLambdaFVars args f'
+      mkLambdaFVars #[h] f'
     let u ← getLevel goal
-    return mkApp5 (mkConst ``dite [u]) goal c h t' f'
+    return mkApp5 (mkConst ``dite [u]) goal c' h' t' f'
 
   if let some casesOnApp ← toCasesOnApp? e then
     if casesOnApp.remaining.size == 1 && casesOnApp.remaining[0]!.isFVarOf oldIH then
@@ -665,6 +669,8 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
         let body ← instantiateLambda body #[param]
         removeLamda body fun oldIH body => do
           let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] (.app motive param) oldIH genIH.fvarId! #[] body
+          if body'.hasAnyFVar (· == oldIH) then
+            throwError m!"Did not fully eliminate {mkFVar oldIH} from induction principle body:{indentExpr body}"
           mkLambdaFVars #[param, genIH] body'
 
       let e' := mkAppN e' #[body', arg, acc]
@@ -682,6 +688,8 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
       -- to pass. So for now lets just keep them around.
       let e' ← mkLambdaFVars (binderInfoForMVars := .default) (params.pop ++ #[motive]) e'
       let e' ← instantiateMVars e'
+
+
       let eTyp ← inferType e'
       -- logInfo m!"eTyp: {eTyp}"
       -- logInfo m!"e has MVar: {e'.hasMVar}"

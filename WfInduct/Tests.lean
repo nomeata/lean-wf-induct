@@ -455,3 +455,22 @@ info: LetFun.bar.induct.{u_1} {α : Type u_1} (x : α) (motive : List α → Pro
 #check bar.induct
 
 end LetFun
+
+
+namespace RecCallInDisrs
+
+def foo : Nat → Nat
+  | 0 => 0
+  | n+1 => if foo n = 0 then 1 else 0
+termination_by n => n
+#derive_induction foo
+
+/--
+info: RecCallInDisrs.foo.induct (motive : Nat → Prop) (case1 : motive 0)
+  (case2 : ∀ (n : Nat), foo n = 0 → motive n → motive (Nat.succ n))
+  (case3 : ∀ (n : Nat), ¬foo n = 0 → motive n → motive (Nat.succ n)) (x : Nat) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+end RecCallInDisrs
