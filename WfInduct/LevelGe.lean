@@ -37,7 +37,7 @@ info: levelGeq.induct (motive : Level → Level → Prop)
         | Level.succ u, Level.succ v => motive u v
         | x, x_1 => True) →
         motive fst snd)
-  (u v : Level) : motive u v
+  (x x : Level) : motive x x
 -/
 #guard_msgs in
 #check levelGeq.induct

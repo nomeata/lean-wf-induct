@@ -30,8 +30,7 @@ private partial def mkPSigmaCasesOn (y : Expr) (codomain : Expr) (xs : Array Exp
  -/
 private partial def packValues (x : Expr) (codomain : Expr) (preDefValues : Array Expr) : MetaM Expr := do
   let varNames := preDefValues.map fun val =>
-    assert! val.isLambda
-    val.bindingName!
+    if val.isLambda then val.bindingName! else `x
   let mvar ← mkFreshExprSyntheticOpaqueMVar codomain
   let rec go (mvarId : MVarId) (x : FVarId) (i : Nat) : MetaM Unit := do
     if i < preDefValues.size - 1 then
@@ -558,29 +557,55 @@ partial def unpackPSum (type : Expr) : List Expr :=
 /-- Given `A ⊗' B ⊗' … ⊗' D` and `R`, return `A → B → … → D → R` -/
 partial def uncurryPSumArrow (domain : Expr) (codomain : Expr) : MetaM Expr := do
   if domain.isAppOfArity ``PSigma 2 then
-    let #[_a, b] := domain.getAppArgs | unreachable!
-    forallBoundedTelescope b (some 1) fun xs b => do
-      mkForallFVars xs (← uncurryPSumArrow b codomain)
+    let #[a, b] := domain.getAppArgs | unreachable!
+    withLocalDecl `x .default a fun x => do
+      mkForallFVars #[x] (← uncurryPSumArrow (b.beta #[x]) codomain)
   else
     mkArrow domain codomain
 
 /-- Given expression `e` with type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]`
 return expression of type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]` -/
+-- TODO: Better control over the names used here
 partial def uncurryPSum (e : Expr) : MetaM Expr := do
   let packedDomain := (← inferType e).bindingDomain!
   go packedDomain packedDomain #[]
 where
   go (packedDomain domain : Expr) args : MetaM Expr :=  do
     if domain.isAppOfArity ``PSigma 2 then
-      let #[_a, b] := domain.getAppArgs | unreachable!
-      forallBoundedTelescope b (some 1) fun xs b => do
-        let #[x] := xs | unreachable!
-        mkLambdaFVars xs (← go packedDomain b (args.push x))
+      let #[a, b] := domain.getAppArgs | unreachable!
+      withLocalDecl `x .default a fun x => do
+        mkLambdaFVars #[x] (← go packedDomain (b.beta #[x]) (args.push x))
     else
       withLocalDecl `x .default domain fun x => do
         let args := args.push x
         let packedArg ← WF.mkUnaryArg packedDomain args
         mkLambdaFVars #[x] (e.beta #[packedArg])
+
+
+/--
+  Given a (dependent) tuple `t` (using `PSigma`) of the given arity.
+  Return an array containing its "elements".
+  Example: `mkTupleElems a 4` returns `#[a.1, a.2.1, a.2.2.1, a.2.2.2]`.
+  -/
+private def mkTupleElems (t : Expr) (arity : Nat) : Array Expr := Id.run do
+  let mut result := #[]
+  let mut t := t
+  for _ in [:arity - 1] do
+    result := result.push (mkProj ``PSigma 0 t)
+    t := mkProj ``PSigma 1 t
+  result.push t
+
+/-- Given expression `e` with type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]`
+return an expression of type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]` -/
+partial def curryPSum (e : Expr) : MetaM Expr := do
+  forallTelescope (← inferType e) fun xs _codomain => do
+    let mut d ← inferType xs.back
+    for x in xs.pop.reverse do
+      d ← mkLambdaFVars #[x] d
+      d ← mkAppOptM ``PSigma #[some (← inferType x), some d]
+    withLocalDecl `x .default d fun x => do
+      let body := e.beta (mkTupleElems x xs.size)
+      mkLambdaFVars #[x] body
 
 /-- Given type `a * b + c * d → e`, brings `a → b → e` and `c → d → e`
 into scope and passes them to the contiuation
@@ -588,7 +613,11 @@ into scope and passes them to the contiuation
 partial def withCurriedDecl {α} (type : Expr) (k : Array FVarId → MetaM α) : MetaM α := do
   let some (d,c) := type.arrow? | throwError "withCurriedDecl: Expected arrow"
   let motiveTypes ← (unpackPSum d).mapM (uncurryPSumArrow · c)
-  go motiveTypes #[]
+  if let [t] := motiveTypes then
+    -- special case due to name; TODO: improve
+    withLocalDecl `motive .default t fun x => do k #[x.fvarId!]
+  else
+    go motiveTypes #[]
 where
   go : List Expr → Array FVarId → MetaM α
   | [], acc => k acc
@@ -643,9 +672,9 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
     withCurriedDecl packedMotiveType fun motives => do
       -- Combine them into a packed motive (motive : a * b + c * d → Prop), and use that
       let motive ← forallBoundedTelescope packedMotiveType (some 1) fun xs motiveCodomain => do
-        let #[x] := xs | throwError "expected exactly one parameterin {type.bindingDomain!}"
-        -- TODO: Bug here
-        let motiveBody ← packValues x motiveCodomain (motives.map mkFVar)
+        let #[x] := xs | throwError "packedMotiveType is not a forall: {packedMotiveType}"
+        let packedMotives ← motives.mapM (fun motive => curryPSum (mkFVar motive))
+        let motiveBody ← packValues x motiveCodomain packedMotives
         mkLambdaFVars xs motiveBody
       let type ← instantiateForall type #[motive]
       let value := mkApp value motive
@@ -657,15 +686,14 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
         let value ← mkLambdaFVars alts value
         let value ← mkLambdaFVars (motives.map mkFVar) value
         let value ← mkLambdaFVars params value
+        check value
         let value ← cleanPackedArgs eqnInfo value
         return value
 
-  let type ← inferType value
-  -- logInfo m!"eTyp: {eTyp}"
-  -- logInfo m!"e has MVar: {e'.hasMVar}"
   unless (← isTypeCorrect value) do
     logError m!"failed to unpack induction priciple:{indentExpr value}"
     check value
+  let type ← inferType value
 
   let inductName := .append eqnInfo.declNames[0]! `mutual_induct
   addDecl <| Declaration.defnDecl {
@@ -711,18 +739,3 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let [name] ← resolveGlobalConst ident
     | throwErrorAt ident m!"ambiguous identifier"
   deriveInduction name
-
-
-mutual
-def even : Nat → Bool
-  | 0 => true
-  | n+1 => odd n
-def odd : Nat → Bool
-  | 0 => false
-  | n+1 => even n
-decreasing_by decreasing_tactic
-end
-
-#derive_induction even
-#check even.induct
-#check odd.induct

@@ -39,8 +39,8 @@ info: rev.induct.{u_1} {α : Type u_1} (motive : Array α → Nat → Prop)
             { val := Array.size fst - snd - 1, isLt := (_ : Array.size fst - snd - 1 < Array.size fst) })
           (snd + 1) →
         motive fst snd)
-  (case2 : ∀ (fst : Array α) (snd : Nat), ¬snd < Array.size fst / 2 → motive fst snd) (arr : Array α) (i : Nat) :
-  motive arr i
+  (case2 : ∀ (fst : Array α) (snd : Nat), ¬snd < Array.size fst / 2 → motive fst snd) (x : Array α) (x : Nat) :
+  motive x x
 -/
 #guard_msgs in
 #check rev.induct

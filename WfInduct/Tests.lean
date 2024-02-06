@@ -35,7 +35,7 @@ termination_by n m => (n, m)
 info: Binary.ackermann.induct (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), motive 0 m)
   (case2 : ∀ (n : Nat), motive n 1 → motive (Nat.succ n) 0)
   (case3 : ∀ (n m : Nat), motive (n + 1) m → motive n (ackermann (n + 1) m) → motive (Nat.succ n) (Nat.succ m))
-  (a✝a✝¹ : Nat) : motive a✝ a✝¹
+  (x x : Nat) : motive x x
 -/
 #guard_msgs in
 #check ackermann.induct
@@ -294,7 +294,7 @@ termination_by n => n
 
 /--
 info: UnusedExtraParams.binary.induct (base : Nat) (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), motive 0 m)
-  (case2 : ∀ (n m : Nat), motive n m → motive (Nat.succ n) m) (a✝a✝¹ : Nat) : motive a✝ a✝¹
+  (case2 : ∀ (n m : Nat), motive n m → motive (Nat.succ n) m) (x x : Nat) : motive x x
 -/
 #guard_msgs in
 #check binary.induct

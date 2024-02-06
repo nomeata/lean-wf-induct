@@ -101,7 +101,7 @@ info: RBNode.NoAsPattern.RBNode.append.induct.{u} (α : Type u) (motive : RBNode
   (case6 :
     ∀ (a : RBNode α) (x : α) (b z1 : RBNode α) (z2 : α) (z3 : RBNode α),
       motive b (node black z1 z2 z3) → motive (node red a x b) (node black z1 z2 z3))
-  (a✝a✝¹ : RBNode α) : motive a✝ a✝¹
+  (x x : RBNode α) : motive x x
 -/
 #guard_msgs in
 #check RBNode.append.induct
