@@ -522,14 +522,15 @@ and then wrap `e` in an appropriate type hint.
 def cleanPackedArgs (eqnInfo : WF.EqnInfo) (value : Expr) : MetaM Expr := do
   -- TODO: This implementation is a bit haphazard.
   -- Simply use Meta.transform instead.
-  let name := eqnInfo.declNames[0]!
-  let foldLemma ← do
+  let mut simpTheorems : SimpTheoremsArray := {}
+  for name in eqnInfo.declNames do
     let ci ← getConstInfoDefn name
     let us := ci.levelParams
     let naryConst := mkConst name (us.map mkLevelParam)
-    lambdaTelescope ci.value fun xs body => do
+    let value ← lambdaTelescope ci.value fun xs body => do
       let type ← mkEq body (mkAppN naryConst xs)
       mkLambdaFVars xs (← mkExpectedTypeHint (← mkEqRefl body) type)
+    simpTheorems ← simpTheorems.addTheorem (.decl name) value
   let (result, _) ← simp (← inferType value) {
       config := {
         -- Empirically determinied minially required simp options
@@ -540,12 +541,12 @@ def cleanPackedArgs (eqnInfo : WF.EqnInfo) (value : Expr) : MetaM Expr := do
         etaStruct := .none
         proj := false
       }
-      simpTheorems := (← SimpTheoremsArray.addTheorem {} (.decl name) foldLemma)
+      simpTheorems
   }
   mkExpectedTypeHint value result.expr
 
 
-/-- Given `A ⊕' B ⊕' … ⊕' D`, return `[A, B, …, D]` -/
+/-- Given type `A ⊕' B ⊕' … ⊕' D`, return `[A, B, …, D]` -/
 partial def unpackPSum (type : Expr) : List Expr :=
   if type.isAppOfArity ``PSum 2 then
     if let #[a, b] := type.getAppArgs then
@@ -554,19 +555,39 @@ partial def unpackPSum (type : Expr) : List Expr :=
   else
     [type]
 
-
 /-- Given `A ⊗' B ⊗' … ⊗' D` and `R`, return `A → B → … → D → R` -/
-partial def uncurryPSum (domain : Expr) (codomain : Expr) : MetaM Expr := do
+partial def uncurryPSumArrow (domain : Expr) (codomain : Expr) : MetaM Expr := do
   if domain.isAppOfArity ``PSigma 2 then
     let #[_a, b] := domain.getAppArgs | unreachable!
     forallBoundedTelescope b (some 1) fun xs b => do
-      mkForallFVars xs (← uncurryPSum b codomain)
+      mkForallFVars xs (← uncurryPSumArrow b codomain)
   else
     mkArrow domain codomain
 
+/-- Given expression `e` with type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]`
+return expression of type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]` -/
+partial def uncurryPSum (e : Expr) : MetaM Expr := do
+  let packedDomain := (← inferType e).bindingDomain!
+  go packedDomain packedDomain #[]
+where
+  go (packedDomain domain : Expr) args : MetaM Expr :=  do
+    if domain.isAppOfArity ``PSigma 2 then
+      let #[_a, b] := domain.getAppArgs | unreachable!
+      forallBoundedTelescope b (some 1) fun xs b => do
+        let #[x] := xs | unreachable!
+        mkLambdaFVars xs (← go packedDomain b (args.push x))
+    else
+      withLocalDecl `x .default domain fun x => do
+        let args := args.push x
+        let packedArg ← WF.mkUnaryArg packedDomain args
+        mkLambdaFVars #[x] (e.beta #[packedArg])
+
+/-- Given type `a * b + c * d → e`, brings `a → b → e` and `c → d → e`
+into scope and passes them to the contiuation
+-/
 partial def withCurriedDecl {α} (type : Expr) (k : Array FVarId → MetaM α) : MetaM α := do
-  let mut packedArgType := type.bindingDomain!
-  let motiveTypes ← (unpackPSum packedArgType).mapM (uncurryPSum · type.bindingBody!)
+  let some (d,c) := type.arrow? | throwError "withCurriedDecl: Expected arrow"
+  let motiveTypes ← (unpackPSum d).mapM (uncurryPSumArrow · c)
   go motiveTypes #[]
 where
   go : List Expr → Array FVarId → MetaM α
@@ -577,11 +598,31 @@ where
       go ts (acc.push x.fvarId!)
 
 
+/-- Given expression `e` of type `(x : a ⊗ b + c ⊗ d) → e[x]` (passed as `t`),
+returns expression of type
+```
+((x: a) → (y : b) → e[inl (x,y)]) ∧ ((x : c) → (y : d) → e[inr (x,y)])
+```
+-/
+def deMorganPSumPSigma (e : Expr) : MetaM Expr := do
+  let packedDomain := (← inferType e).bindingDomain!
+  let unaryTypes := unpackPSum packedDomain
+  let mut es := #[]
+  for unaryType in unaryTypes, i in [:unaryTypes.length] do
+    -- unary : (x : a ⊗ b) → e[inl x]
+    let unary ← withLocalDecl `x .default unaryType fun x => do
+        let packedArg ← WF.mkMutualArg unaryTypes.length packedDomain i x
+        mkLambdaFVars #[x] (e.beta #[packedArg])
+    -- nary : ((x: a) → (y : b) → e[inl (x,y)]
+    let nary ← uncurryPSum unary
+    es := es.push nary
+  mkAndIntroN es
+
 /--
 Takes an induction principle where the motive is a `PSigma`/`PSum` type and
 unpacks it into a joint and n-ary induction principle.
 -/
-def unpackMutualInduction (unaryInductName : Name) : MetaM Unit := do
+def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : MetaM Name := do
   let ci ← getConstInfo unaryInductName
   let us := ci.levelParams
   let value := .const ci.name (us.map mkLevelParam)
@@ -608,11 +649,14 @@ def unpackMutualInduction (unaryInductName : Name) : MetaM Unit := do
       let type ← instantiateForall type #[motive]
       let value := mkApp value motive
       -- Bring the rest into scope
-      forallTelescope type fun alts _concl => do
+      forallTelescope type fun xs _concl => do
+        let alts := xs.pop
         let value := mkAppN value alts
+        let value ← deMorganPSumPSigma value
         let value ← mkLambdaFVars alts value
         let value ← mkLambdaFVars (motives.map mkFVar) value
         let value ← mkLambdaFVars params value
+        let value ← cleanPackedArgs eqnInfo value
         return value
 
   let type ← inferType value
@@ -622,98 +666,37 @@ def unpackMutualInduction (unaryInductName : Name) : MetaM Unit := do
     logError m!"failed to unpack induction priciple:{indentExpr value}"
     check value
 
-  let inductName := .append unaryInductName `unpacked
+  let inductName := .append eqnInfo.declNames[0]! `mutual_induct
   addDecl <| Declaration.defnDecl {
       name := inductName, levelParams := ci.levelParams, type, value,
       hints := ReducibilityHints.regular 0
       safety := DefinitionSafety.safe
   }
-  return
+  return inductName
 
 def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): MetaM Unit := do
-  if eqnInfo.declNames.size > 1 then
-    unpackMutualInduction unaryInductName
-    -- throwError "Mutual recursion not supported"
-    return
-  let name := eqnInfo.declNames[0]!
+  let unpackedInductName ← unpackMutualInduction eqnInfo unaryInductName
+  let ci ← getConstInfoDefn unpackedInductName
+  let us := ci.levelParams
 
-  let ci ← getConstInfoDefn name
-  let unaryInductCI ← getConstInfo unaryInductName
-  let us := unaryInductCI.levelParams
-  -- We determine the arity based on the value, not the type, like the WF translation does
-  -- But we get the parameters from the type, because they have better names there
-  let arity ← lambdaTelescope ci.value fun xs _body => pure xs.size
-  unless arity > eqnInfo.fixedPrefixSize + 1 do
-    throwError "Unexpected lambda arity in body of {name}"
-  let value ← forallBoundedTelescope ci.type arity fun xs _ => do
-    unless arity = xs.size do
-      throwError "Not enough foralls in type of {name}"
-    let body ← instantiateLambda ci.value xs
-    let fixedParams : Array Expr := xs[:eqnInfo.fixedPrefixSize]
-    let targetParams : Array Expr := xs[eqnInfo.fixedPrefixSize:]
-
-    let packedArg ← body.withApp fun f args => do
-      unless f.isConstOf eqnInfo.declNameNonRec do
-        throwError "{name} is not defined via {eqnInfo.declNameNonRec}, but {f}"
-      unless args.size = eqnInfo.fixedPrefixSize + 1 do
-        throwError "unexpected number of parameters to {eqnInfo.declNameNonRec} "
-      -- unless args.pop = fixedParams do
-      --  throwErrorAt ident "unexpected number of parameters to {eqnInfo.declNameNonRec} "
-      return args.back
-
-    let elimInfo ← getElimExprInfo (mkConst unaryInductName (us.map mkLevelParam))
-    -- We assume the eliminator created by deriveUnaryInduction
-    -- has fixed prefix and motive in the beginning and target at the end
-    unless elimInfo.motivePos = eqnInfo.fixedPrefixSize do
-        throwError "unary induction principle does not start with fixed prefix"
-    let #[targetPos] := elimInfo.targetsPos
-      | throwError "unary induction has more than one target pos?"
-    -- unless targetPos = elimInfo.motivePos + 1 + elimInfo.altsInfo.size do
-    --  throwError "unary induction has target not at the end?"
-
-    let unaryElimType ← instantiateForall elimInfo.elimType xs[:eqnInfo.fixedPrefixSize]
-
-    let motiveType ← mkForallFVars targetParams (.sort levelZero)
-    withLocalDecl `motive .default motiveType fun motive => do
-
-    let packedDomain ← id do -- TODO: Expose in PackDomain
-        let mut d ← inferType targetParams.back
-        for x in targetParams.pop.reverse do
-          d ← mkAppOptM ``PSigma #[some (← inferType x), some (← mkLambdaFVars #[x] d)]
-        return d
-
-    let unaryMotive ← do
-      withLocalDecl `x .default packedDomain fun packed => do
-        let codomain := .sort levelZero
-          let value := mkAppN motive targetParams
-        mkLambdaFVars #[packed] (← mkPSigmaCasesOn packed codomain targetParams value)
-    let unaryElimType ← instantiateForall unaryElimType #[unaryMotive]
-
-    let remaining_alts : Nat := targetPos - eqnInfo.fixedPrefixSize - 1
-    forallBoundedTelescope unaryElimType remaining_alts fun alts _unaryElimType => do
-        let value := elimInfo.elimExpr
-        let value := mkAppN value fixedParams
-        let value := mkApp value unaryMotive
-        let value := mkAppN value alts
-        let value := mkApp value packedArg
-        let value ← mkLambdaFVars targetParams value
-        let value ← mkLambdaFVars alts value
-        let value ← mkLambdaFVars #[motive] value
-        let value ← mkLambdaFVars fixedParams value
-        let value ← cleanPackedArgs eqnInfo value
-        return value
-
-  let inductName := .append name `induct
-  -- logInfo m!"Final {value}"
-  check value
-  addDecl <| Declaration.defnDecl {
-    name := inductName,
-    levelParams := us,
-    type := (← inferType value),
-    value := value,
-    hints := ReducibilityHints.regular 0
-    safety := DefinitionSafety.safe
-}
+  for name in eqnInfo.declNames, idx in [:eqnInfo.declNames.size] do
+    let value ← forallTelescope ci.type fun xs _body => do
+      let value := .const ci.name (us.map mkLevelParam)
+      -- TODO: abstract out
+      let mut value := mkAppN value xs
+      for _i in [:idx] do
+          value := mkProj ``And 1 value
+      if idx + 1 < eqnInfo.declNames.size then
+          value := mkProj ``And 0 value
+      -- body should be conjunction
+      mkLambdaFVars xs value
+    let type ← inferType value
+    let inductName := .append name `induct
+    addDecl <| Declaration.defnDecl {
+      name := inductName, levelParams := us, type, value,
+      hints := ReducibilityHints.regular 0
+      safety := DefinitionSafety.safe
+    }
 
 def deriveInduction (name : Name) : MetaM Unit := do
   if let some eqnInfo := WF.eqnInfoExt.find? (← getEnv) name then
@@ -740,4 +723,5 @@ decreasing_by decreasing_tactic
 end
 
 #derive_induction even
-#check even._mutual.induct.unpacked
+#check even.induct
+#check odd.induct
