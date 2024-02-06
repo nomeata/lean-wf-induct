@@ -492,3 +492,67 @@ info: RecCallInDisrs.bar.induct (motive : Nat → Prop) (case1 : motive 0)
 #check bar.induct
 
 end RecCallInDisrs
+
+namespace EvenOdd
+
+mutual
+def even : Nat → Bool
+  | 0 => true
+  | n+1 => odd n
+termination_by n => n
+def odd : Nat → Bool
+  | 0 => false
+  | n+1 => even n
+termination_by n => n
+end
+#derive_induction even
+
+/--
+info: EvenOdd.even.induct (motive1 motive2 : Nat → Prop) (case1 : motive1 0)
+  (case2 : ∀ (n : Nat), motive2 n → motive1 (Nat.succ n)) (case3 : motive2 0)
+  (case4 : ∀ (n : Nat), motive1 n → motive2 (Nat.succ n)) (x : Nat) : motive1 x
+-/
+#guard_msgs in
+#check even.induct
+
+/--
+info: EvenOdd.odd.induct (motive1 motive2 : Nat → Prop) (case1 : motive1 0)
+  (case2 : ∀ (n : Nat), motive2 n → motive1 (Nat.succ n)) (case3 : motive2 0)
+  (case4 : ∀ (n : Nat), motive1 n → motive2 (Nat.succ n)) (x : Nat) : motive2 x
+-/
+#guard_msgs in
+#check odd.induct
+
+end EvenOdd
+
+namespace Tree
+
+inductive Tree : Type
+  | node : List Tree → Tree
+
+mutual
+def Tree.map (f : Tree → Tree) : Tree → Tree
+  | Tree.node ts => Tree.node (map_forest f ts)
+
+def Tree.map_forest (f : Tree → Tree) (ts : List Tree) : List Tree :=
+  ts.attach.map (fun ⟨t, _ht⟩ => Tree.map f t)
+end
+#derive_induction Tree.map
+
+/--
+info: Tree.Tree.map.induct (f : Tree → Tree) (motive1 : Tree → Prop) (motive2 : List Tree → Prop)
+  (case1 : ∀ (ts : List Tree), motive2 ts → motive1 (Tree.node ts))
+  (case2 : ∀ (val : List Tree), (∀ (t : Tree), t ∈ val → motive1 t) → motive2 val) (x : Tree) : motive1 x
+-/
+#guard_msgs in
+#check Tree.map.induct
+
+/--
+info: Tree.Tree.map_forest.induct (f : Tree → Tree) (motive1 : Tree → Prop) (motive2 : List Tree → Prop)
+  (case1 : ∀ (ts : List Tree), motive2 ts → motive1 (Tree.node ts))
+  (case2 : ∀ (val : List Tree), (∀ (t : Tree), t ∈ val → motive1 t) → motive2 val) (x : List Tree) : motive2 x
+-/
+#guard_msgs in
+#check Tree.map_forest.induct
+
+end Tree
