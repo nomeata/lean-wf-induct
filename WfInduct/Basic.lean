@@ -67,7 +67,7 @@ def removeLamda {α} (e : Expr) (k : FVarId → Expr →  MetaM α) : MetaM α :
 partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
   let r ← id do
     -- logInfo m!"foldCalls {mkFVar oldIH} {indentExpr e}"
-    if ! e.hasAnyFVar (· == oldIH) then
+    if ! e.containsFVar oldIH then
       return e
 
     if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
@@ -132,7 +132,7 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
     throwError "foldCalls: cannot eliminate {mkFVar oldIH} from {indentExpr e}"
 
   -- sanity check for debugging
-  if r.hasAnyFVar (· == oldIH) then
+  if r.containsFVar oldIH then
     throwError "foldCalls: failed to eliminate {mkFVar oldIH} from {indentExpr r}"
   return r
 
@@ -153,7 +153,7 @@ def mkAndIntroN : Array Expr → MetaM Expr
 -- (TODO: Accumulated with a left fold)
 -- (TODO: Revert context in the leaf, based on local context?)
 partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Array Expr) := do
-  if ! e.hasAnyFVar (· == oldIH) then
+  if ! e.containsFVar oldIH then
     return #[]
 
   if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
@@ -477,7 +477,7 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
         let body ← instantiateLambda body #[param]
         removeLamda body fun oldIH body => do
           let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] (.app motive param) oldIH genIH.fvarId! #[] body
-          if body'.hasAnyFVar (· == oldIH) then
+          if body'.containsFVar oldIH then
             throwError m!"Did not fully eliminate {mkFVar oldIH} from induction principle body:{indentExpr body}"
           mkLambdaFVars #[param, genIH] body'
 
@@ -644,6 +644,7 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
       -- Combine them into a packed motive (motive : a * b + c * d → Prop), and use that
       let motive ← forallBoundedTelescope packedMotiveType (some 1) fun xs motiveCodomain => do
         let #[x] := xs | throwError "expected exactly one parameterin {type.bindingDomain!}"
+        -- TODO: Bug here
         let motiveBody ← packValues x motiveCodomain (motives.map mkFVar)
         mkLambdaFVars xs motiveBody
       let type ← instantiateForall type #[motive]
@@ -674,7 +675,7 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
   }
   return inductName
 
-def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): MetaM Unit := do
+def deriveUnpackedInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): MetaM Unit := do
   let unpackedInductName ← unpackMutualInduction eqnInfo unaryInductName
   let ci ← getConstInfoDefn unpackedInductName
   let us := ci.levelParams
@@ -702,7 +703,7 @@ def deriveInduction (name : Name) : MetaM Unit := do
   if let some eqnInfo := WF.eqnInfoExt.find? (← getEnv) name then
     let unaryInductName ← deriveUnaryInduction eqnInfo.declNameNonRec
     unless eqnInfo.declNameNonRec = name do
-      deriveBinaryInduction eqnInfo unaryInductName
+      deriveUnpackedInduction eqnInfo unaryInductName
   else
     _ ← deriveUnaryInduction name
 
