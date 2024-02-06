@@ -20,6 +20,36 @@ private partial def mkPSigmaCasesOn (y : Expr) (codomain : Expr) (xs : Array Exp
   go mvar.mvarId! y.fvarId! #[]
   instantiateMVars mvar
 
+-- From PackMutual
+/--
+  Combine/pack the values of the different definitions in a single value
+  `x` is `PSum`, and we use `PSum.casesOn` to select the appropriate `preDefs.value`.
+  See: `packMutual`.
+  Remark: this method does not replace the nested recursive `preDefValues` applications.
+  This step is performed by `transform` with the following `post` method.
+ -/
+private partial def packValues (x : Expr) (codomain : Expr) (preDefValues : Array Expr) : MetaM Expr := do
+  let varNames := preDefValues.map fun val =>
+    assert! val.isLambda
+    val.bindingName!
+  let mvar ← mkFreshExprSyntheticOpaqueMVar codomain
+  let rec go (mvarId : MVarId) (x : FVarId) (i : Nat) : MetaM Unit := do
+    if i < preDefValues.size - 1 then
+      /-
+        Names for the `cases` tactics. The names are important to preserve the user provided names (unary functions).
+      -/
+      let givenNames : Array AltVarNames :=
+         if i == preDefValues.size - 2 then
+           #[{ varNames := [varNames[i]!] }, { varNames := [varNames[i+1]!] }]
+         else
+           #[{ varNames := [varNames[i]!] }]
+       let #[s₁, s₂] ← mvarId.cases x (givenNames := givenNames) | unreachable!
+      s₁.mvarId.assign (mkApp preDefValues[i]! s₁.fields[0]!).headBeta
+      go s₂.mvarId s₂.fields[0]!.fvarId! (i+1)
+    else
+      mvarId.assign (mkApp preDefValues[i]! (mkFVar x)).headBeta
+  go mvar.mvarId! x.fvarId! 0
+  instantiateMVars mvar
 
 /-- Opens the body of a lambda, _without_ putting the free variable into the local context.
 This is used when replacing that paramters with a different expression.
@@ -514,9 +544,97 @@ def cleanPackedArgs (eqnInfo : WF.EqnInfo) (value : Expr) : MetaM Expr := do
   }
   mkExpectedTypeHint value result.expr
 
+
+/-- Given `A ⊕' B ⊕' … ⊕' D`, return `[A, B, …, D]` -/
+partial def unpackPSum (type : Expr) : List Expr :=
+  if type.isAppOfArity ``PSum 2 then
+    if let #[a, b] := type.getAppArgs then
+      a :: unpackPSum b
+    else unreachable!
+  else
+    [type]
+
+
+/-- Given `A ⊗' B ⊗' … ⊗' D` and `R`, return `A → B → … → D → R` -/
+partial def uncurryPSum (domain : Expr) (codomain : Expr) : MetaM Expr := do
+  if domain.isAppOfArity ``PSigma 2 then
+    let #[_a, b] := domain.getAppArgs | unreachable!
+    forallBoundedTelescope b (some 1) fun xs b => do
+      mkForallFVars xs (← uncurryPSum b codomain)
+  else
+    mkArrow domain codomain
+
+partial def withCurriedDecl {α} (type : Expr) (k : Array FVarId → MetaM α) : MetaM α := do
+  let mut packedArgType := type.bindingDomain!
+  let motiveTypes ← (unpackPSum packedArgType).mapM (uncurryPSum · type.bindingBody!)
+  go motiveTypes #[]
+where
+  go : List Expr → Array FVarId → MetaM α
+  | [], acc => k acc
+  | t::ts, acc => do
+    let name := s!"motive{acc.size+1}" -- TODO: Make configurable
+    withLocalDecl name .default t fun x => do
+      go ts (acc.push x.fvarId!)
+
+
+/--
+Takes an induction principle where the motive is a `PSigma`/`PSum` type and
+unpacks it into a joint and n-ary induction principle.
+-/
+def unpackMutualInduction (unaryInductName : Name) : MetaM Unit := do
+  let ci ← getConstInfo unaryInductName
+  let us := ci.levelParams
+  let value := .const ci.name (us.map mkLevelParam)
+  let motivePos ← forallTelescope ci.type fun xs concl => concl.withApp fun motive targets => do
+    unless motive.isFVar && targets.size = 1 && targets.all (·.isFVar) do
+      throwError "conclusion {concl} does not look like a packed motive application"
+    let packedTarget := targets[0]!
+    unless xs.back == packedTarget do
+      throwError "packed target not last argument to {unaryInductName}"
+    let some motivePos := xs.findIdx? (· == motive)
+      | throwError "could not find motive {motive} in {xs}"
+    pure motivePos
+  let value ← forallBoundedTelescope ci.type motivePos fun params type => do
+    let value := mkAppN value params
+    -- Next parameter is the motive (motive : a * b + c * d → Prop).
+    let packedMotiveType := type.bindingDomain!
+    -- Bring unpacked motives (motive1 : a → b → Prop and motive2 : c → d → Prop) into scope
+    withCurriedDecl packedMotiveType fun motives => do
+      -- Combine them into a packed motive (motive : a * b + c * d → Prop), and use that
+      let motive ← forallBoundedTelescope packedMotiveType (some 1) fun xs motiveCodomain => do
+        let #[x] := xs | throwError "expected exactly one parameterin {type.bindingDomain!}"
+        let motiveBody ← packValues x motiveCodomain (motives.map mkFVar)
+        mkLambdaFVars xs motiveBody
+      let type ← instantiateForall type #[motive]
+      let value := mkApp value motive
+      -- Bring the rest into scope
+      forallTelescope type fun alts _concl => do
+        let value := mkAppN value alts
+        let value ← mkLambdaFVars alts value
+        let value ← mkLambdaFVars (motives.map mkFVar) value
+        let value ← mkLambdaFVars params value
+        return value
+
+  let type ← inferType value
+  -- logInfo m!"eTyp: {eTyp}"
+  -- logInfo m!"e has MVar: {e'.hasMVar}"
+  unless (← isTypeCorrect value) do
+    logError m!"failed to unpack induction priciple:{indentExpr value}"
+    check value
+
+  let inductName := .append unaryInductName `unpacked
+  addDecl <| Declaration.defnDecl {
+      name := inductName, levelParams := ci.levelParams, type, value,
+      hints := ReducibilityHints.regular 0
+      safety := DefinitionSafety.safe
+  }
+  return
+
 def deriveBinaryInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): MetaM Unit := do
   if eqnInfo.declNames.size > 1 then
-    throwError "Mutual recursion not supported"
+    unpackMutualInduction unaryInductName
+    -- throwError "Mutual recursion not supported"
+    return
   let name := eqnInfo.declNames[0]!
 
   let ci ← getConstInfoDefn name
@@ -609,3 +727,17 @@ elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let [name] ← resolveGlobalConst ident
     | throwErrorAt ident m!"ambiguous identifier"
   deriveInduction name
+
+
+mutual
+def even : Nat → Bool
+  | 0 => true
+  | n+1 => odd n
+def odd : Nat → Bool
+  | 0 => false
+  | n+1 => even n
+decreasing_by decreasing_tactic
+end
+
+#derive_induction even
+#check even._mutual.induct.unpacked
