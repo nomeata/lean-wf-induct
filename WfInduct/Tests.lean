@@ -556,3 +556,51 @@ info: Tree.Tree.map_forest.induct (f : Tree → Tree) (motive1 : Tree → Prop) 
 #check Tree.map_forest.induct
 
 end Tree
+
+namespace DefaultArgument
+
+-- Default arguments should not be copied over
+
+def foo (fixed : Bool := false) (n : Nat) (m : Nat := 0) : Nat :=
+  match n with
+  | 0 => m
+  | n+1 => foo fixed n m
+termination_by n
+#derive_induction foo
+
+/--
+info: DefaultArgument.foo.induct (fixed : Bool) (motive : Nat → Nat → Prop) (case1 : ∀ (snd : Nat), motive 0 snd)
+  (case2 : ∀ (snd n : Nat), motive n snd → motive (Nat.succ n) snd) (x x : Nat) : motive x x
+-/
+#guard_msgs in
+#check foo.induct
+
+end DefaultArgument
+
+namespace Nary
+
+def foo : Nat → Nat → (k : Nat) → Fin k → Nat
+  | 0, _, _, _ => 0
+  | _, 0, _, _ => 0
+  | _, _, 0, _ => 0
+  | _, _, 1, _ => 0
+  | n+1, m+1, k+2, _ => foo n m (k+1) ⟨0, Nat.zero_lt_succ _⟩
+termination_by n => n
+#derive_induction foo
+
+/--
+info: Nary.foo.induct (motive : Nat → Nat → (x : Nat) → Fin x → Prop)
+  (case1 : ∀ (x x_1 : Nat) (x_2 : Fin x_1), motive 0 x x_1 x_2)
+  (case2 : ∀ (x x_1 : Nat) (x_2 : Fin x_1), (x = 0 → False) → motive x 0 x_1 x_2)
+  (case3 : ∀ (x x_1 : Nat) (x_2 : Fin 0), (x = 0 → False) → (x_1 = 0 → False) → motive x x_1 0 x_2)
+  (case4 : ∀ (x x_1 : Nat) (x_2 : Fin 1), (x = 0 → False) → (x_1 = 0 → False) → motive x x_1 1 x_2)
+  (case5 :
+    ∀ (n m k : Nat) (x : Fin (k + 2)),
+      motive n m (k + 1) { val := 0, isLt := (_ : 0 < Nat.succ k) } →
+        motive (Nat.succ n) (Nat.succ m) (Nat.succ (Nat.succ k)) x)
+  (x x x : Nat) (x : Fin x) : motive x x x x
+-/
+#guard_msgs in
+#check foo.induct
+
+end Nary

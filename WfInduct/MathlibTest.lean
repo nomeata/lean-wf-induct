@@ -17,7 +17,7 @@ elab "#derive_all_inductions" : command => runTermElabM fun _ => do
         logInfo m!"Testing {eqnInfo.declNameNonRec}"
         -- IO.println s!"Testing {eqnInfo.declNameNonRec}"
         try
-          let _inductName ← deriveUnaryInduction eqnInfo.declNameNonRec
+          deriveInduction eqnInfo.declNames[0]!
           -- logInfo m!"Derived {inductName} : {indentExpr (← getConstInfo inductName).type}"
           good := good + 1
         catch e =>

@@ -5,21 +5,6 @@ set_option autoImplicit false
 
 open Lean Elab Command Meta
 
--- From PackDomain
-private partial def mkPSigmaCasesOn (y : Expr) (codomain : Expr) (xs : Array Expr) (value : Expr) : MetaM Expr := do
-  let mvar ← mkFreshExprSyntheticOpaqueMVar codomain
-  let rec go (mvarId : MVarId) (y : FVarId) (ys : Array Expr) : MetaM Unit := do
-    if ys.size < xs.size - 1 then
-      let xDecl  ← xs[ys.size]!.fvarId!.getDecl
-      let xDecl' ← xs[ys.size + 1]!.fvarId!.getDecl
-      let #[s] ← mvarId.cases y #[{ varNames := [xDecl.userName, xDecl'.userName] }] | unreachable!
-      go s.mvarId s.fields[1]!.fvarId! (ys.push s.fields[0]!)
-    else
-      let ys := ys.push (mkFVar y)
-      mvarId.assign (value.replaceFVars xs ys)
-  go mvar.mvarId! y.fvarId! #[]
-  instantiateMVars mvar
-
 -- From PackMutual
 /--
   Combine/pack the values of the different definitions in a single value
@@ -496,8 +481,8 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
       let e' ← mkLambdaFVars (binderInfoForMVars := .default) (params.pop ++ #[motive]) e'
       let e' ← instantiateMVars e'
 
-
       let eTyp ← inferType e'
+      let eTyp ← elimOptParam eTyp
       -- logInfo m!"eTyp: {eTyp}"
       -- logInfo m!"e has MVar: {e'.hasMVar}"
       unless (← isTypeCorrect e') do
@@ -581,31 +566,32 @@ where
         let packedArg ← WF.mkUnaryArg packedDomain args
         mkLambdaFVars #[x] (e.beta #[packedArg])
 
-
-/--
-  Given a (dependent) tuple `t` (using `PSigma`) of the given arity.
-  Return an array containing its "elements".
-  Example: `mkTupleElems a 4` returns `#[a.1, a.2.1, a.2.2.1, a.2.2.2]`.
-  -/
-private def mkTupleElems (t : Expr) (arity : Nat) : Array Expr := Id.run do
-  let mut result := #[]
-  let mut t := t
-  for _ in [:arity - 1] do
-    result := result.push (mkProj ``PSigma 0 t)
-    t := mkProj ``PSigma 1 t
-  result.push t
+-- Adapted from PackDomain, continuation passing style and no variable names
+partial def mkPSigmaCasesOn (y : FVarId) (codomain : Expr) (k : Array Expr → MetaM Expr) : MetaM Expr := do
+  let mvar ← mkFreshExprSyntheticOpaqueMVar codomain
+  let rec go (mvarId : MVarId) (y : FVarId) (ys : Array Expr) : MetaM Unit := mvarId.withContext do
+    if (← inferType (mkFVar y)).isAppOfArity ``PSigma 2 then
+      let #[s] ← mvarId.cases y | unreachable!
+      go s.mvarId s.fields[1]!.fvarId! (ys.push s.fields[0]!)
+    else
+      let ys := ys.push (mkFVar y)
+      mvarId.assign (← k ys)
+  go mvar.mvarId! y #[]
+  instantiateMVars mvar
 
 /-- Given expression `e` with type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]`
 return an expression of type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]` -/
+-- TODO: This might not yet quite work if R depends on x
 partial def curryPSum (e : Expr) : MetaM Expr := do
-  forallTelescope (← inferType e) fun xs _codomain => do
+  let (d, codomain) ← forallTelescope (← inferType e) fun xs codomain => do
     let mut d ← inferType xs.back
     for x in xs.pop.reverse do
       d ← mkLambdaFVars #[x] d
       d ← mkAppOptM ``PSigma #[some (← inferType x), some d]
-    withLocalDecl `x .default d fun x => do
-      let body := e.beta (mkTupleElems x xs.size)
-      mkLambdaFVars #[x] body
+    return (d, codomain)
+  withLocalDecl `x .default d fun x => do
+    let value ← mkPSigmaCasesOn x.fvarId! codomain fun ys => pure (e.beta ys)
+    mkLambdaFVars #[x] value
 
 /-- Given type `a * b + c * d → e`, brings `a → b → e` and `c → d → e`
 into scope and passes them to the contiuation
@@ -694,6 +680,7 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
     logError m!"failed to unpack induction priciple:{indentExpr value}"
     check value
   let type ← inferType value
+  let type ← elimOptParam type
 
   let inductName := .append eqnInfo.declNames[0]! `mutual_induct
   addDecl <| Declaration.defnDecl {
