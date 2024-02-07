@@ -1,7 +1,7 @@
 import Lake
 open Lake DSL
 
-package «wf-induct» where
+package wfinduct where
 
 -- require std from git "https://github.com/leanprover/std4" @ "lean-pr-testing-3230"
 require mathlib from git "https://github.com/leanprover-community/mathlib4" @ "nightly-testing-2024-02-02"
