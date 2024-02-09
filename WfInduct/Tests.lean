@@ -604,3 +604,30 @@ info: Nary.foo.induct (motive : Nat → Nat → (x : Nat) → Fin x → Prop)
 #check foo.induct
 
 end Nary
+
+namespace Dite
+
+def foo (n : Nat) : Nat :=
+  let j := n - 1
+  if _h : j < n then
+    foo j
+  else
+    42
+#derive_induction foo
+
+/--
+info: Dite.foo.induct (motive : Nat → Prop)
+  (case1 :
+    ∀ (x : Nat),
+      let j := x - 1;
+      j < x → motive j → motive x)
+  (case2 :
+    ∀ (x : Nat),
+      let j := x - 1;
+      ¬j < x → motive x)
+  (x : Nat) : motive x
+-/
+#guard_msgs in
+#check foo.induct
+
+end Dite
