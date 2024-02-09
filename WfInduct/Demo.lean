@@ -8,7 +8,6 @@ def ackermann : Nat → Nat → Nat
   | 0, m => m + 1
   | n+1, 0 => ackermann n 1
   | n+1, m+1 => ackermann n (ackermann (n + 1) m)
-termination_by n m => (n, m)
 #derive_induction ackermann
 
 /--
@@ -20,11 +19,8 @@ info: ackermann.induct (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), m
 #guard_msgs in
 #check ackermann.induct
 
-inductive Tree
-  | node : List Tree → Tree
-
-def Tree.rev : Tree → Tree
-  | node ts => .node (ts.attach.map (fun ⟨t, _ht⟩ => t.rev) |>.reverse)
+inductive Tree | node : List Tree → Tree
+def Tree.rev : Tree → Tree | node ts => .node (ts.attach.map (fun ⟨t, _ht⟩ => t.rev) |>.reverse)
 
 #derive_induction Tree.rev
 

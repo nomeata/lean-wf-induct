@@ -8,26 +8,17 @@ principle that follows that function's execution paths.
 Examples:
 
 ```lean
-def ackermann : (Nat × Nat) → Nat
-  | (0, m) => m + 1
-  | (n+1, 0) => ackermann (n, 1)
-  | (n+1, m+1) => ackermann (n, ackermann (n + 1, m))
-termination_by ackermann p => p
-
-#derive_induction ackermann
-#check ackermann.induct
+def ackermann : Nat → Nat → Nat
+  | 0, m => m + 1
+  | n+1, 0 => ackermann n 1
+  | n+1, m+1 => ackermann n (ackermann (n + 1) m)
 ```
 produces
 ```lean
-ackermann.induct (motive : Nat × Nat → Prop)
-  (case1 : ∀ (m : Nat), motive (0, m))
-  (case2 : ∀ (n : Nat), motive (n, 1) → motive (Nat.succ n, 0))
-  (case3 :
-    ∀ (n m : Nat),
-      motive (n, ackermann (n + 1, m)) →
-      motive (n + 1, m) →
-      motive (Nat.succ n, Nat.succ m))
-  (x : Nat × Nat) : motive x
+ackermann.induct (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), motive 0 m)
+  (case2 : ∀ (n : Nat), motive n 1 → motive (Nat.succ n) 0)
+  (case3 : ∀ (n m : Nat), motive (n + 1) m → motive n (ackermann (n + 1) m) → motive (Nat.succ n) (Nat.succ m))
+  (x x : Nat) : motive x x
 ```
 and
 ```lean
