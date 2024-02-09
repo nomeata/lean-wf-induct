@@ -82,8 +82,8 @@ termination_by n => n
 #derive_induction have_tailrec
 
 /--
-info: have_tailrec.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : ∀ (n : Nat), motive n → motive (Nat.succ n))
-  (x : Nat) : motive x
+info: have_tailrec.induct (motive : Nat → Prop) (case1 : motive 0)
+  (case2 : ∀ (n : Nat), n < n + 1 → motive n → motive (Nat.succ n)) (x : Nat) : motive x
 -/
 #guard_msgs in
 #check have_tailrec.induct
@@ -115,7 +115,11 @@ termination_by n => n
 #derive_induction let_tailrec
 
 /--
-info: let_tailrec.induct (motive : Nat → Prop) (case1 : motive 0) (case2 : ∀ (n : Nat), motive n → motive (Nat.succ n))
+info: let_tailrec.induct (motive : Nat → Prop) (case1 : motive 0)
+  (case2 :
+    ∀ (n : Nat),
+      let h2 := (_ : n < Nat.succ n);
+      motive n → motive (Nat.succ n))
   (x : Nat) : motive x
 -/
 #guard_msgs in

@@ -263,7 +263,7 @@ def assertIHs (vals : Array Expr) (mvarid : MVarId) : MetaM MVarId := do
   return mvarid
 
 -- Base case: Introduce a new hyp
-def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear : Array FVarId)
+def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear toPreserve : Array FVarId)
     (goal : Expr) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
   -- logInfo m!"Tail position {e}"
   let IHs := IHs ++ (← collectIHs fn oldIH newIH e)
@@ -274,16 +274,18 @@ def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear 
   -- logInfo m!"New hyp 1 {mvarId}"
   mvarId ← assertIHs IHs mvarId
   -- logInfo m!"New hyp 2 {mvarId}"
-  for fv in toClear do
-    mvarId ← mvarId.tryClear fv
+  for fvarId in toClear do
+    mvarId ← mvarId.clear fvarId
   -- logInfo m!"New hyp 3 {mvarId}"
-  mvarId ← mvarId.cleanup
+  -- TODO: This cleans up too much. Should keep track of which assumptions to keep, not (just)
+  -- what to clear!
+  mvarId ← mvarId.cleanup (toPreserve := toPreserve)
   let (_, _mvarId) ← mvarId.revertAfter motiveFVar
   let mvar ← instantiateMVars mvar
   -- logInfo <| m!"New hyp {_mvarId}" ++ Format.line ++ m!"used as {mvar}"
   pure mvar
 
-partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Array FVarId)
+partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear toPreserve : Array FVarId)
     (goal : Expr) (oldIH newIH : FVarId) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
   -- logInfo m!"buildInductionBody:{indentExpr e}"
 
@@ -294,11 +296,11 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
     let h' ← foldCalls fn oldIH h
     let t' ← withLocalDecl `h .default c' fun h => do
       let t ← instantiateLambda t #[h]
-      let t' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs t
+      let t' ← buildInductionBody motiveFVar fn toClear (toPreserve.push h.fvarId!) goal oldIH newIH IHs t
       mkLambdaFVars #[h] t'
     let f' ← withLocalDecl `h .default (mkNot c') fun h => do
       let f ← instantiateLambda f #[h]
-      let f' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs f
+      let f' ← buildInductionBody motiveFVar fn toClear (toPreserve.push h.fvarId!) goal oldIH newIH IHs f
       mkLambdaFVars #[h] f'
     let u ← getLevel goal
     return mkApp5 (mkConst ``dite [u]) goal c' h' t' f'
@@ -344,7 +346,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
             let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
               let #[newIH'] := newIH' | unreachable!
               -- logInfo m!"goal': {goal'}"
-              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! IHs alt
+              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) toPreserve goal' oldIH' newIH'.fvarId! IHs alt
               mkLambdaFVars #[newIH'] alt' -- x is the new argument we are adding to the alternative
             mkLambdaFVars xs alt'
           pure alt'
@@ -387,7 +389,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
           removeLamda alt fun oldIH' alt => do
             forallBoundedTelescope expAltType (some 1) fun newIH' goal' => do
               let #[newIH'] := newIH' | unreachable!
-              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) goal' oldIH' newIH'.fvarId! IHs alt
+              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) toPreserve goal' oldIH' newIH'.fvarId! IHs alt
               mkLambdaFVars #[newIH'] alt')
         (onRemaining := fun _ => pure #[.fvar newIH])
 
@@ -400,10 +402,8 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
     let t' ← foldCalls fn oldIH t
     let v' ← foldCalls fn oldIH v
     return ← withLetDecl n t' v' fun x => do
-      -- Should we keep let declaraions in the inductive theorem?
-      -- If not, we can add them to `toClear`.
-      let toClear := toClear.push x.fvarId!
-      let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs (b.instantiate1 x)
+      let b' ← buildInductionBody motiveFVar fn toClear toPreserve goal oldIH newIH IHs (b.instantiate1 x)
+      -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
       mkLetFVars #[x] b'
 
   if let some (n, t, v, b) := e.letFun? then
@@ -411,15 +411,12 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear : Arra
     let t' ← foldCalls fn oldIH t
     let v' ← foldCalls fn oldIH v
     return ← withLocalDecl n .default t' fun x => do
-      -- Should we keep have declaraions in the inductive theorem?
-      -- If not, we can add them to `toClear`.
-      let toClear := toClear.push x.fvarId!
-      let b' ← buildInductionBody motiveFVar fn toClear goal oldIH newIH IHs (b.instantiate1 x)
+      let b' ← buildInductionBody motiveFVar fn toClear toPreserve goal oldIH newIH IHs (b.instantiate1 x)
       -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
       mkLetFun x v' b'
 
   -- logInfo m!"Tail position at end of buildInductionBody: {e}"
-  createHyp motiveFVar fn oldIH newIH toClear goal IHs e
+  createHyp motiveFVar fn oldIH newIH toClear toPreserve goal IHs e
 
 partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
   lambdaTelescope e fun params body => do
@@ -460,7 +457,7 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
         -- open body with the same arg
         let body ← instantiateLambda body #[param]
         removeLamda body fun oldIH body => do
-          let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] (.app motive param) oldIH genIH.fvarId! #[] body
+          let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] #[] (.app motive param) oldIH genIH.fvarId! #[] body
           if body'.containsFVar oldIH then
             throwError m!"Did not fully eliminate {mkFVar oldIH} from induction principle body:{indentExpr body}"
           mkLambdaFVars #[param, genIH] body'
