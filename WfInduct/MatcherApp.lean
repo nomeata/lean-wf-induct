@@ -4,6 +4,25 @@ set_option autoImplicit false
 
 open Lean Meta
 
+
+def matchMatcherOrCasesOnApp? (e : Expr) : MetaM (Option MatcherApp) := do
+  if let some matcherApp ← matchMatcherApp? e then
+    return some matcherApp
+  if let some casesOnApp ← toCasesOnApp? e then
+    return some {
+      matcherName := casesOnApp.declName
+      matcherLevels := casesOnApp.us.toArray
+      uElimPos? := if casesOnApp.propOnly then none else some 0
+      params := casesOnApp.params
+      motive := casesOnApp.motive
+      discrs := casesOnApp.indices.push casesOnApp.major
+      alts := casesOnApp.alts
+      remaining := casesOnApp.remaining
+      altNumParams := casesOnApp.altNumParams
+    }
+  return none
+
+
 /--
 Removes `fvarId` from the local context, and replaces occurrences of it with `e`.
 It is the responsibility of the caller to ensure that `e` is well-typed in the context
@@ -109,8 +128,15 @@ def Lean.Meta.MatcherApp.transform (matcherApp : MatcherApp)
     (onRemaining : Array Expr → MetaM (Array Expr) := pure) :
     MetaM MatcherApp := do
 
-  -- TODO: Include discrEq info in MatcherApp, like numAltParams
-  let numDiscrEqs ← match ← getMatcherInfo? matcherApp.matcherName with
+  -- We also handle CasesOn applications here, and need to treat them specially in a
+  -- few places.
+  -- TODO: Expand MatcherApp with the necessary fields to make this more uniform
+  -- (in particular, include discrEq and whether there is a splitter)
+  let isCasesOn := isCasesOnRecursor (← getEnv) matcherApp.matcherName
+
+  let numDiscrEqs ←
+    if isCasesOn then pure 0 else
+    match ← getMatcherInfo? matcherApp.matcherName with
     | some info => pure info.getNumDiscrEqs
     | none      => throwError "matcher {matcherApp.matcherName} has no MatchInfo found"
 
@@ -127,7 +153,7 @@ def Lean.Meta.MatcherApp.transform (matcherApp : MatcherApp)
     | none     => pure matcherApp.matcherLevels
     | some pos => pure <| matcherApp.matcherLevels.set! pos uElim
 
-  if useSplitter then
+  if useSplitter && !isCasesOn then
     -- We replace the matcher with the splitter
     let matchEqns ← Match.getEquationsFor matcherApp.matcherName
     let splitter := matchEqns.splitterName

@@ -5,6 +5,7 @@ set_option autoImplicit false
 
 open Lean Elab Command Meta
 
+
 -- From PackMutual
 /--
   Combine/pack the values of the different definitions in a single value
@@ -305,64 +306,7 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear toPres
     let u ← getLevel goal
     return mkApp5 (mkConst ``dite [u]) goal c' h' t' f'
 
-  if let some casesOnApp ← toCasesOnApp? e then
-    if casesOnApp.remaining.size == 1 && casesOnApp.remaining[0]!.isFVarOf oldIH then
-      let discrs := casesOnApp.indices ++ #[casesOnApp.major]
-
-      let motive' ← lambdaTelescope casesOnApp.motive fun motiveArgs _motiveBody => do
-        unless motiveArgs.size == 1 do
-          throwError "unexpected matcher application, motive must be lambda expression with 1 argument"
-
-        let mut argTypeAbst ← newIH.getType
-        for motiveArg in motiveArgs.reverse, discr in discrs.reverse do
-          argTypeAbst := (← kabstract argTypeAbst discr).instantiate1 motiveArg
-
-        let mut goalAbst := goal
-        for motiveArg in motiveArgs.reverse, discr in discrs.reverse do
-          goalAbst := (← kabstract goalAbst discr).instantiate1 motiveArg
-
-        let motiveBody ← mkArrow argTypeAbst goalAbst
-        mkLambdaFVars motiveArgs motiveBody
-
-      let us ← if casesOnApp.propOnly then
-        pure casesOnApp.us
-      else
-        pure ((← getLevel goal) :: casesOnApp.us.tail!)
-      -- TODO: Levels
-      let aux := mkAppN (mkConst casesOnApp.declName us) casesOnApp.params
-      let aux := mkApp aux motive'
-      let aux := mkAppN aux discrs
-      unless (← isTypeCorrect aux) do
-        throwError "failed to add argument to casesOn application, type error when constructing the new motive"
-      let mut auxType ← inferType aux
-
-      let mut alts' := #[]
-      for alt in casesOnApp.alts,
-          numParams in casesOnApp.altNumParams do
-        let Expr.forallE _ d b _ ← whnfD auxType | unreachable!
-        let alt' ← forallBoundedTelescope d (some numParams) fun xs d => do
-          let alt ← try instantiateLambda alt xs catch _ => throwError "unexpected matcher application, insufficient number of parameters in alternative"
-          let alt' ← removeLamda alt fun oldIH' alt => do
-            let alt' ← forallBoundedTelescope d (some 1) fun newIH' goal' => do
-              let #[newIH'] := newIH' | unreachable!
-              -- logInfo m!"goal': {goal'}"
-              let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) toPreserve goal' oldIH' newIH'.fvarId! IHs alt
-              mkLambdaFVars #[newIH'] alt' -- x is the new argument we are adding to the alternative
-            mkLambdaFVars xs alt'
-          pure alt'
-        auxType := b.instantiate1 alt'
-        alts' := alts'.push alt'
-      let casesOnApp' := { casesOnApp with
-        us        := us,
-        motive    := motive',
-        alts      := alts',
-        remaining := casesOnApp.remaining.set! 0 (.fvar newIH)
-      }
-      -- check matcherApp'.toExpr
-      -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
-      return casesOnApp'.toExpr
-
-  if let some matcherApp ← matchMatcherApp? e then
+  if let some matcherApp ← matchMatcherOrCasesOnApp? e then
     -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
 
