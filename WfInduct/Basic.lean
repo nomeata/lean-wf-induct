@@ -74,7 +74,7 @@ partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
         let b' ← foldCalls fn oldIH (b.instantiate1 x)
         mkLetFun x v' b'
 
-    if let some matcherApp ← matchMatcherApp? e then
+    if let some matcherApp ← matchMatcherOrCasesOnApp? e then
       -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
       if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
         let matcherApp' ← matcherApp.transform
@@ -166,7 +166,7 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       let ihs2 ← ihs2.mapM (mkLetFVars (usedLetOnly := true) #[x] ·)
       return ihs1 ++ ihs2
 
-  if let some matcherApp ← matchMatcherApp? e then
+  if let some matcherApp ← matchMatcherOrCasesOnApp? e then
     -- logInfo m!"{matcherApp.matcherName} {Expr.fvar oldIH}/{Expr.fvar newIH} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
 
