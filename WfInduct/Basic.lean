@@ -535,22 +535,23 @@ partial def curryPSum (e : Expr) : MetaM Expr := do
     let value ← mkPSigmaCasesOn x.fvarId! codomain fun ys => pure (e.beta ys)
     mkLambdaFVars #[x] value
 
-/-- Given type `a * b + c * d → e`, brings `a → b → e` and `c → d → e`
-into scope and passes them to the contiuation
+/-- Given type `(a * b + c * d) → e`, brings `a → b → e` and `c → d → e`
+into scope and passes them to the contiuation.
+The `name` is used to form the variable names; uses `name1`, `name2`, … if there are multiple.
 -/
-partial def withCurriedDecl {α} (type : Expr) (k : Array FVarId → MetaM α) : MetaM α := do
+partial def withCurriedDecl {α} (name : String) (type : Expr) (k : Array FVarId → MetaM α) : MetaM α := do
   let some (d,c) := type.arrow? | throwError "withCurriedDecl: Expected arrow"
   let motiveTypes ← (unpackPSum d).mapM (uncurryPSumArrow · c)
   if let [t] := motiveTypes then
-    -- special case due to name; TODO: improve
-    withLocalDecl `motive .default t fun x => do k #[x.fvarId!]
+    -- If a singleton, do not number the names.
+    withLocalDecl name .default t fun x => do k #[x.fvarId!]
   else
     go motiveTypes #[]
 where
   go : List Expr → Array FVarId → MetaM α
   | [], acc => k acc
   | t::ts, acc => do
-    let name := s!"motive{acc.size+1}" -- TODO: Make configurable
+    let name := s!"{name}{acc.size+1}"
     withLocalDecl name .default t fun x => do
       go ts (acc.push x.fvarId!)
 
@@ -597,7 +598,7 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
     -- Next parameter is the motive (motive : a * b + c * d → Prop).
     let packedMotiveType := type.bindingDomain!
     -- Bring unpacked motives (motive1 : a → b → Prop and motive2 : c → d → Prop) into scope
-    withCurriedDecl packedMotiveType fun motives => do
+    withCurriedDecl "motive" packedMotiveType fun motives => do
       -- Combine them into a packed motive (motive : a * b + c * d → Prop), and use that
       let motive ← forallBoundedTelescope packedMotiveType (some 1) fun xs motiveCodomain => do
         let #[x] := xs | throwError "packedMotiveType is not a forall: {packedMotiveType}"
