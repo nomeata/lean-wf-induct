@@ -565,7 +565,7 @@ where
       go ts (acc.push x.fvarId!)
 
 
-/-- Given expression `e` of type `(x : a ⊗ b + c ⊗ d) → e[x]` (passed as `t`),
+/-- Given expression `e` of type `(x : a ⊗ b + c ⊗ d) → e[x]`,
 returns expression of type
 ```
 ((x: a) → (y : b) → e[inl (x,y)]) ∧ ((x : c) → (y : d) → e[inr (x,y)])
@@ -574,16 +574,23 @@ returns expression of type
 def deMorganPSumPSigma (e : Expr) : MetaM Expr := do
   let packedDomain := (← inferType e).bindingDomain!
   let unaryTypes := unpackPSum packedDomain
-  let mut es := #[]
-  for unaryType in unaryTypes, i in [:unaryTypes.length] do
-    -- unary : (x : a ⊗ b) → e[inl x]
-    let unary ← withLocalDecl `x .default unaryType fun x => do
-        let packedArg ← WF.mkMutualArg unaryTypes.length packedDomain i x
-        mkLambdaFVars #[x] (e.beta #[packedArg])
-    -- nary : ((x: a) → (y : b) → e[inl (x,y)]
-    let nary ← uncurryPSum unary
-    es := es.push nary
-  mkAndIntroN es
+  shareIf (unaryTypes.length > 1) e fun e => do
+    let mut es := #[]
+    for unaryType in unaryTypes, i in [:unaryTypes.length] do
+      -- unary : (x : a ⊗ b) → e[inl x]
+      let unary ← withLocalDecl `x .default unaryType fun x => do
+          let packedArg ← WF.mkMutualArg unaryTypes.length packedDomain i x
+          mkLambdaFVars #[x] (e.beta #[packedArg])
+      -- nary : ((x: a) → (y : b) → e[inl (x,y)]
+      let nary ← uncurryPSum unary
+      es := es.push nary
+    mkAndIntroN es
+  where
+    shareIf (b : Bool) (e : Expr) (k : Expr → MetaM Expr) : MetaM Expr := do
+      if b then
+        withLetDecl `packed (← inferType e) e fun e => do mkLetFVars #[e] (← k e)
+      else
+        k e
 
 /--
 Takes an induction principle where the motive is a `PSigma`/`PSum` type and
