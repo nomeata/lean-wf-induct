@@ -44,7 +44,7 @@ termination_by x y => x.size + y.size
 
 set_option pp.proofs.withType false
 set_option pp.match false
--- #derive_induction RBNode.append
+-- derive_induction RBNode.append
 
 /-
 
@@ -85,7 +85,7 @@ def RBNode.append : RBNode α → RBNode α → RBNode α
   | node red a x b, (node .black z1 z2 z3) => node red a x (append b (node .black z1 z2 z3))
 termination_by x y => x.size + y.size
 
-#derive_induction RBNode.append
+derive_induction RBNode.append
 /--
 info: RBNode.NoAsPattern.RBNode.append.induct.{u} (α : Type u) (motive : RBNode α → RBNode α → Prop)
   (case1 : ∀ (x : RBNode α), motive nil x) (case2 : ∀ (x : RBNode α), (x = nil → False) → motive x nil)

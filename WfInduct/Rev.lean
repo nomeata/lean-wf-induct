@@ -28,7 +28,7 @@ decreasing_by simp_wf; omega
 
 end Manual
 
-#derive_induction rev
+derive_induction rev
 
 /--
 info: rev.induct.{u_1} {α : Type u_1} (motive : Array α → Nat → Prop)

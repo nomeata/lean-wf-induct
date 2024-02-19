@@ -7,7 +7,7 @@ def merge (r : α → α → Bool) : (l : List α) → (l' : List α) → List �
   | a :: l, b :: l' => if r a b then a :: merge r l (b :: l') else b :: merge r (a :: l) l'
   termination_by l₁ l₂ => l₁.length + l₂.length
 
-#derive_induction merge
+derive_induction merge
 
 /--
 info: merge.induct.{u_1} {α : Type u_1} (r : α → α → Bool) (motive : List α → List α → Prop)

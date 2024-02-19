@@ -22,7 +22,7 @@ def levelGeq (u v : Lean.Level) : Bool :=
       && u.getOffset ≥ v.getOffset
 termination_by (u, v)
 
-#derive_induction levelGeq
+derive_induction levelGeq
 
 /--
 info: levelGeq.induct (motive : Level → Level → Prop)

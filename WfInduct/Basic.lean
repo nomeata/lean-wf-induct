@@ -711,7 +711,6 @@ def deriveInduction (name : Name) : MetaM Unit := do
   else
     _ ← deriveUnaryInduction name
 
-elab "#derive_induction " ident:ident : command => runTermElabM fun _xs => do
-  let [name] ← resolveGlobalConst ident
-    | throwErrorAt ident m!"ambiguous identifier"
+elab "derive_induction " ident:ident : command => runTermElabM fun _xs => do
+  let name ← resolveGlobalConstNoOverloadWithInfo ident
   deriveInduction name

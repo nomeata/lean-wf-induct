@@ -5,7 +5,7 @@ import Lean
 
 open Lean Elab Meta Command
 
-elab "#derive_all_inductions" : command => runTermElabM fun _ => do
+elab "derive_all_inductions" : command => runTermElabM fun _ => do
   logInfo "Running derive_all_inductions"
   let mut good := 0
   let mut bad := 0
@@ -26,4 +26,4 @@ elab "#derive_all_inductions" : command => runTermElabM fun _ => do
           pure ()
   logInfo m!"Successes {good}, failures {bad}"
 
-#derive_all_inductions
+derive_all_inductions
