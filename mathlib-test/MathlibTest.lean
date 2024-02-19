@@ -5,6 +5,8 @@ import Lean
 
 open Lean Elab Meta Command
 
+open Lean.Elab.WF.Induct
+
 elab "derive_all_inductions" : command => runTermElabM fun _ => do
   logInfo "Running derive_all_inductions"
   let mut good := 0

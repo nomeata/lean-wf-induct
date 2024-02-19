@@ -1,7 +1,120 @@
+/-
+Copyright (c) 2024 Lean FRO, LLC. All rights reserved.
+Released under Apache 2.0 license as described in the file LICENSE.
+Authors: Joachim Breitner
+-/
+
 import Lean
 import WfInduct.MatcherApp
 
+/-!
+This module contains code to derive, from the definition of a (possibly mutual) recursive function,
+an induction principle tailored to proofs about that function. For example from:
+
+```
+def ackermann : Nat → Nat → Nat
+  | 0, m => m + 1
+  | n+1, 0 => ackermann n 1
+  | n+1, m+1 => ackermann n (ackermann (n + 1) m)
+derive_induction ackermann
+```
+we get
+```
+ackermann.induct (motive : Nat → Nat → Prop) (case1 : ∀ (m : Nat), motive 0 m)
+  (case2 : ∀ (n : Nat), motive n 1 → motive (Nat.succ n) 0)
+  (case3 : ∀ (n m : Nat), motive (n + 1) m → motive n (ackermann (n + 1) m) → motive (Nat.succ n) (Nat.succ m))
+  (x x : Nat) : motive x x
+```
+
+## Spec
+
+The induction principle
+
+* Take the same fixed parameters as the function.
+* The motive takes the same non-fixed parameter as the original function.
+* For each branch of the original function, there is a case in the induction principle.
+  Here branch roughly corresponds to tail-call positions: Branches of top-level
+  if-then-else and matches.
+* The local context of the branch (e.g. the condition of an if-then-else) is provided as assumptions
+  in the case.
+* In addition, for every recursive call in that branch, an induction hypothesis asserting the motive
+  for the arguments of the recursive call is provided.
+* If the recursive call is under binder and it, or its proof of termination, on the the bound,
+  values, these become assumptions on the inductive hypothesis.
+* Mutual recursion is supported and results in multiple motives.
+
+
+## Implementation overview
+
+
+For a non-mutual, unary function `foo` (or else for the `_unary` function), we
+
+1. expect its definition, possibly after some `whnf`’ing, to be of the form
+   ```
+   def foo := fun x₁ … xₙ (y : a) => fix (fun y' oldIH => body) y
+   ```
+   where `xᵢ…` are the fixed prefix and `y` is parameter of the function.
+
+2. From this structure we derive the type of the `motive`, and start assembling the induction
+   principle:
+   ```
+   def foo.induct := fun x₁ … xₙ (motive : (y : a) → Prop) =>
+    fix (fun y' newIH => T[body])
+   ```
+
+3. The first phase, transformation `T1[body]` (implemented in) `buildInductionBody`,
+   mirrors the branching structure of `foo`, i.e. replicates `ite` and matcher applications,
+   while adjusting their motive. It also unfolds call to `oldIH` and collects induction hypotheses
+   in conditions (see below).
+
+   In particular when translating a `match`, it is prepared to see the idiom
+   as introduced by `mkFix` via `Lean.Meta.MatcherApp.addArg?`, which refines the type of `oldIH`
+   throught the match. The transformation will replace `oldIH` with `newIH` here.
+   ```
+        T[(match (motive := fun oldIH => …) y with | … => fun oldIH' => body) oldIH]
+    ==> (match (motive := fun newIH => …) y with | … => fun newIH' => T[body]) newIH
+   ```
+
+4. When a tail position (no more branching) is found, function `buildInductionCase` assembles the
+   type of the case: A fresh `MVar` asserts the current goal, unwanted values from the local context
+   are cleared, and the current `body` is frisked for induction hypotheses using `collectIHs`,
+   which are then asserted in the `MVar`.
+
+
+5. Function `collectIHs` walks the term and collects the induction hypotheses for the current case
+   (with proofs). When it encounters a saturated application of `oldIH x proof`, it returns
+   `newIH x proof : motive x`.
+
+   Since `x` and `proof` can contain further recursive calls, it uses
+   `foldCalls` to replace these with calls to `foo`. This assumes that the
+   termination proof `proof` works nevertheless.
+
+   Again, we may encounter the `Lean.Meta.Matcherapp.addArg?` idiom, and again we thread `newIH`
+   through, replacing the extra argument. The resulting type of this induction hypothesis is now
+   itself a `match` statement (cf. `Lean.Meta.MatcherApp.inferMatchType`)
+
+   The termination proof of `foo` may have abstracted over some proofs; we need to transfer these
+   proofs, so we unfold these auxillary lemmas if needed.
+
+6. The function `foldCalls` replaces calls to `oldIH` with calls to `foo` that
+   make sense to the user.
+
+   At the end of this transformation, no mention of `oldIH` must remain.
+
+7. After this construction, the MVars introduced by `buildInductionCase` are turned into parameters.
+
+The resulting term then becomes `foo.induct` at its inferred type.
+
+If `foo` is not unary and/or part of a mutual reduction, then TODO
+
+
+
+-/
+
+
 set_option autoImplicit false
+
+namespace Lean.Elab.WF.Induct
 
 open Lean Elab Command Meta
 
@@ -280,32 +393,24 @@ def assertIHs (vals : Array Expr) (mvarid : MVarId) : MetaM MVarId := do
     mvarid ← mvarid.assert s!"IH{i+1}" (← inferType v) v
   return mvarid
 
--- Base case: Introduce a new hyp
-def createHyp (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear toPreserve : Array FVarId)
+/-- Base case of `buildInductionBody`: Construct a case for the final induction hypthesis.  -/
+def buildInductionCase (motiveFVar : FVarId) (fn : Expr) (oldIH newIH : FVarId) (toClear toPreserve : Array FVarId)
     (goal : Expr) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
-  -- logInfo m!"Tail position {e}"
   let IHs := IHs ++ (← collectIHs fn oldIH newIH e)
   let IHs ← deduplicateIHs IHs
 
   let mvar ← mkFreshExprSyntheticOpaqueMVar goal (tag := `hyp)
   let mut mvarId := mvar.mvarId!
-  -- logInfo m!"New hyp 1 {mvarId}"
   mvarId ← assertIHs IHs mvarId
-  -- logInfo m!"New hyp 2 {mvarId}"
   for fvarId in toClear do
     mvarId ← mvarId.clear fvarId
-  -- logInfo m!"New hyp 3 {mvarId}"
-  -- TODO: This cleans up too much. Should keep track of which assumptions to keep, not (just)
-  -- what to clear!
   mvarId ← mvarId.cleanup (toPreserve := toPreserve)
   let (_, _mvarId) ← mvarId.revertAfter motiveFVar
   let mvar ← instantiateMVars mvar
-  -- logInfo <| m!"New hyp {_mvarId}" ++ Format.line ++ m!"used as {mvar}"
   pure mvar
 
 partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear toPreserve : Array FVarId)
     (goal : Expr) (oldIH newIH : FVarId) (IHs : Array Expr) (e : Expr) : MetaM Expr := do
-  -- logInfo m!"buildInductionBody:{indentExpr e}"
 
   if e.isDIte then
     let #[_α, c, h, t, f] := e.getAppArgs | unreachable!
@@ -324,10 +429,8 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear toPres
     return mkApp5 (mkConst ``dite [u]) goal c' h' t' f'
 
   if let some matcherApp ← matchMatcherOrCasesOnApp? e then
-    -- logInfo m!"{matcherApp.matcherName} {goal} {←inferType (Expr.fvar newIH)} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
-
-      -- Collect IHs from the parametrs and discrs of the matcher
+      -- Collect IHs from the parameters and discrs of the matcher
       let mut IHs := IHs
       for param in matcherApp.params do
         IHs := IHs ++ (← collectIHs fn oldIH newIH param)
@@ -353,9 +456,6 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear toPres
               let alt' ← buildInductionBody motiveFVar fn (toClear.push newIH'.fvarId!) toPreserve goal' oldIH' newIH'.fvarId! IHs alt
               mkLambdaFVars #[newIH'] alt')
         (onRemaining := fun _ => pure #[.fvar newIH])
-
-      -- check matcherApp'.toExpr
-      -- logInfo m!"matcherApp' {matcherApp'.toExpr}"
       return matcherApp'.toExpr
 
   if let .letE n t v b _ := e then
@@ -364,7 +464,6 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear toPres
     let v' ← foldCalls fn oldIH v
     return ← withLetDecl n t' v' fun x => do
       let b' ← buildInductionBody motiveFVar fn toClear toPreserve goal oldIH newIH IHs (b.instantiate1 x)
-      -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
       mkLetFVars #[x] b'
 
   if let some (n, t, v, b) := e.letFun? then
@@ -373,11 +472,9 @@ partial def buildInductionBody (motiveFVar : FVarId) (fn : Expr) (toClear toPres
     let v' ← foldCalls fn oldIH v
     return ← withLocalDecl n .default t' fun x => do
       let b' ← buildInductionBody motiveFVar fn toClear toPreserve goal oldIH newIH IHs (b.instantiate1 x)
-      -- logInfo m!"x: {x}, v: {v}, b: {b}, b': {b'}"
       mkLetFun x v' b'
 
-  -- logInfo m!"Tail position at end of buildInductionBody: {e}"
-  createHyp motiveFVar fn oldIH newIH toClear toPreserve goal IHs e
+  buildInductionCase motiveFVar fn oldIH newIH toClear toPreserve goal IHs e
 
 partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
   lambdaTelescope e fun params body => do
@@ -435,9 +532,10 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
 
     -- We could pass (usedOnly := true) below, and get nicer induction principles that
     -- do do not mention odd unused parameters.
-    -- But the downside is that automatic instantiation of the principle (e.g. when
-    -- deriving the binary one) is much harder, as one would have to infer which parameters
-    -- to pass. So for now lets just keep them around.
+    -- But the downside is that automatic instantiation of the principle (e.g. in a tactic
+    -- that derives them from an function application in the goal) is harder, as
+    -- one would have to infer or keep track of which parameters to pass.
+    -- So for now lets just keep them around.
     let e' ← mkLambdaFVars (binderInfoForMVars := .default) (params.pop ++ #[motive]) e'
     let e' ← instantiateMVars e'
 
@@ -465,7 +563,6 @@ In the type of `value`, reduces
 and then wraps `value` in an appropriate type hint.
 -/
 def cleanPackedArgs (eqnInfo : WF.EqnInfo) (value : Expr) : MetaM Expr := do
-
   -- TODO: Make arities (or varnames) part of eqnInfo
   let arities ← eqnInfo.declNames.mapM fun name => do
       let ci ← getConstInfoDefn name
@@ -534,9 +631,10 @@ partial def uncurryPSumArrow (domain : Expr) (codomain : Expr) : MetaM Expr := d
   else
     mkArrow domain codomain
 
-/-- Given expression `e` with type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]`
-return expression of type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]` -/
--- TODO: Better control over the names used here
+/--
+Given expression `e` with type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]`
+return expression of type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]`
+-/
 partial def uncurryPSum (e : Expr) : MetaM Expr := do
   let packedDomain := (← inferType e).bindingDomain!
   go packedDomain packedDomain #[]
@@ -552,8 +650,14 @@ where
         let packedArg ← WF.mkUnaryArg packedDomain args
         mkLambdaFVars #[x] (e.beta #[packedArg])
 
--- Adapted from PackDomain, continuation passing style and no variable names
-partial def mkPSigmaCasesOn (y : FVarId) (codomain : Expr) (k : Array Expr → MetaM Expr) : MetaM Expr := do
+/--
+Iterated `PSigma.casesOn`: Given `y : a ⊕' b ⊕ …` and a type `codomain`,
+and `alt : (x : a) → (y : b) → codomain`, uses `PSigma.casesOn` to invoke `alt` on `y`.
+
+This very is similar to `Lean.Predefinition.WF.mkPSigmaCasesOn`, but takes a lambda rather than
+free variables.
+-/
+partial def mkPSigmaNCasesOn (y : FVarId) (codomain : Expr) (alt : Expr) : MetaM Expr := do
   let mvar ← mkFreshExprSyntheticOpaqueMVar codomain
   let rec go (mvarId : MVarId) (y : FVarId) (ys : Array Expr) : MetaM Unit := mvarId.withContext do
     if (← inferType (mkFVar y)).isAppOfArity ``PSigma 2 then
@@ -561,12 +665,14 @@ partial def mkPSigmaCasesOn (y : FVarId) (codomain : Expr) (k : Array Expr → M
       go s.mvarId s.fields[1]!.fvarId! (ys.push s.fields[0]!)
     else
       let ys := ys.push (mkFVar y)
-      mvarId.assign (← k ys)
+      mvarId.assign (alt.beta ys)
   go mvar.mvarId! y #[]
   instantiateMVars mvar
 
-/-- Given expression `e` with type `(x : A) → (y : B[x]) → … → (z : D[x,y]) → R`
-return an expression of type `(x : A ⊗' B ⊗' … ⊗' D) → R` -/
+/--
+Given expression `e` with type `(x : A) → (y : B[x]) → … → (z : D[x,y]) → R`
+return an expression of type `(x : A ⊗' B ⊗' … ⊗' D) → R`.
+-/
 partial def curryPSum (e : Expr) : MetaM Expr := do
   let (d, codomain) ← forallTelescope (← inferType e) fun xs codomain => do
     if xs.any (codomain.containsFVar ·.fvarId!) then
@@ -577,28 +683,29 @@ partial def curryPSum (e : Expr) : MetaM Expr := do
       d ← mkAppOptM ``PSigma #[some (← inferType x), some d]
     return (d, codomain)
   withLocalDecl `x .default d fun x => do
-    let value ← mkPSigmaCasesOn x.fvarId! codomain fun ys => pure (e.beta ys)
+    let value ← mkPSigmaNCasesOn x.fvarId! codomain e
     mkLambdaFVars #[x] value
 
-/-- Given type `(a * b + c * d) → e`, brings `a → b → e` and `c → d → e`
+/--
+Given type `(a ⊗' b ⊕' c ⊗' d) → e`, brings `a → b → e` and `c → d → e`
 into scope and passes them to the contiuation.
 The `name` is used to form the variable names; uses `name1`, `name2`, … if there are multiple.
 -/
-partial def withCurriedDecl {α} (name : String) (type : Expr) (k : Array FVarId → MetaM α) : MetaM α := do
+partial def withCurriedDecl {α} (name : String) (type : Expr) (k : Array Expr → MetaM α) : MetaM α := do
   let some (d,c) := type.arrow? | throwError "withCurriedDecl: Expected arrow"
   let motiveTypes ← (unpackPSum d).mapM (uncurryPSumArrow · c)
   if let [t] := motiveTypes then
     -- If a singleton, do not number the names.
-    withLocalDecl name .default t fun x => do k #[x.fvarId!]
+    withLocalDecl name .default t fun x => do k #[x]
   else
     go motiveTypes #[]
 where
-  go : List Expr → Array FVarId → MetaM α
+  go : List Expr → Array Expr → MetaM α
   | [], acc => k acc
   | t::ts, acc => do
     let name := s!"{name}{acc.size+1}"
     withLocalDecl name .default t fun x => do
-      go ts (acc.push x.fvarId!)
+      go ts (acc.push x)
 
 
 /-- Given expression `e` of type `(x : a ⊗ b + c ⊗ d) → e[x]`,
@@ -617,7 +724,7 @@ def deMorganPSumPSigma (e : Expr) : MetaM Expr := do
       let unary ← withLocalDecl `x .default unaryType fun x => do
           let packedArg ← WF.mkMutualArg unaryTypes.length packedDomain i x
           mkLambdaFVars #[x] (e.beta #[packedArg])
-      -- nary : ((x: a) → (y : b) → e[inl (x,y)]
+      -- nary : (x : a) → (y : b) → e[inl (x,y)]
       let nary ← uncurryPSum unary
       es := es.push nary
     mkAndIntroN es
@@ -650,14 +757,14 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
     pure motivePos
   let value ← forallBoundedTelescope ci.type motivePos fun params type => do
     let value := mkAppN value params
-    -- Next parameter is the motive (motive : a * b + c * d → Prop).
+    -- Next parameter is the motive (motive : a ⊗' b ⊕' c ⊗' d → Prop).
     let packedMotiveType := type.bindingDomain!
     -- Bring unpacked motives (motive1 : a → b → Prop and motive2 : c → d → Prop) into scope
     withCurriedDecl "motive" packedMotiveType fun motives => do
-      -- Combine them into a packed motive (motive : a * b + c * d → Prop), and use that
+      -- Combine them into a packed motive (motive : a ⊗' b ⊕' c ⊗' d → Prop), and use that
       let motive ← forallBoundedTelescope packedMotiveType (some 1) fun xs motiveCodomain => do
         let #[x] := xs | throwError "packedMotiveType is not a forall: {packedMotiveType}"
-        let packedMotives ← motives.mapM (fun motive => curryPSum (mkFVar motive))
+        let packedMotives ← motives.mapM curryPSum
         let motiveBody ← packValues x motiveCodomain packedMotives
         mkLambdaFVars xs motiveBody
       let type ← instantiateForall type #[motive]
@@ -668,13 +775,13 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
         let value := mkAppN value alts
         let value ← deMorganPSumPSigma value
         let value ← mkLambdaFVars alts value
-        let value ← mkLambdaFVars (motives.map mkFVar) value
+        let value ← mkLambdaFVars motives value
         let value ← mkLambdaFVars params value
         check value
         let value ← cleanPackedArgs eqnInfo value
         return value
 
-  unless (← isTypeCorrect value) do
+  unless ← isTypeCorrect value do
     logError m!"failed to unpack induction priciple:{indentExpr value}"
     check value
   let type ← inferType value
@@ -718,3 +825,5 @@ def deriveInduction (name : Name) : MetaM Unit := do
 elab "derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let name ← resolveGlobalConstNoOverloadWithInfo ident
   deriveInduction name
+
+end Lean.Elab.WF.Induct
