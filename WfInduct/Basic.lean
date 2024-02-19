@@ -132,6 +132,15 @@ def mkAndIntroN : Array Expr → MetaM Expr
 | #[e] => return e
 | es => es.foldrM (start := es.size - 1) (fun a b => mkAppM ``And.intro #[a,b]) es.back
 
+/-- Given a proof of `P₁ ∧ … ∧ Pᵢ ∧ … ∧ Pₙ`, return the proof of `Pᵢ` -/
+def mkProjAndN (n i : Nat) (e : Expr) : Expr := Id.run do
+  let mut value := e
+  for _ in [:i] do
+      value := mkProj ``And 1 value
+  if i + 1 < n then
+      value := mkProj ``And 0 value
+  return value
+
 
 -- Non-tail-positions: Collect induction hypotheses
 -- (TODO: Worth folding with `foldCalls`, like before?)
@@ -641,13 +650,8 @@ def deriveUnpackedInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): Met
   for name in eqnInfo.declNames, idx in [:eqnInfo.declNames.size] do
     let value ← forallTelescope ci.type fun xs _body => do
       let value := .const ci.name (us.map mkLevelParam)
-      -- TODO: abstract out
-      let mut value := mkAppN value xs
-      for _i in [:idx] do
-          value := mkProj ``And 1 value
-      if idx + 1 < eqnInfo.declNames.size then
-          value := mkProj ``And 0 value
-      -- body should be conjunction
+      let value := mkAppN value xs
+      let value := mkProjAndN eqnInfo.declNames.size idx value
       mkLambdaFVars xs value
     let type ← inferType value
     let inductName := .append name `induct
