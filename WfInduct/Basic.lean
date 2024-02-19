@@ -448,37 +448,64 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
       return inductName
 
 /--
-In the type of `value`, reduce
+In the type of `value`, reduces
+* Beta-redexes
 * `PSigma.casesOn (PSigma.mk a b) (fun x y => k x y)  -->  k a b`
-* `foo._unary (PSigma.mk a b) (fun x y => k x y)      -->  foo a b`
-and then wrap `e` in an appropriate type hint.
+* `PSum.casesOn (PSum.inl x) k₁ k₂                    -->  k₁ x`
+* `foo._unary (PSum.inl (PSigma.mk a b))              -->  foo a b`
+and then wraps `value` in an appropriate type hint.
 -/
 def cleanPackedArgs (eqnInfo : WF.EqnInfo) (value : Expr) : MetaM Expr := do
-  -- TODO: This implementation is a bit haphazard.
-  -- Simply use Meta.transform instead.
-  let mut simpTheorems : SimpTheoremsArray := {}
-  for name in eqnInfo.declNames do
-    let ci ← getConstInfoDefn name
-    let us := ci.levelParams
-    let naryConst := mkConst name (us.map mkLevelParam)
-    let value ← lambdaTelescope ci.value fun xs body => do
-      let type ← mkEq body (mkAppN naryConst xs)
-      mkLambdaFVars xs (← mkExpectedTypeHint (← mkEqRefl body) type)
-    simpTheorems ← simpTheorems.addTheorem (.decl name) value
-  let (result, _) ← simp (← inferType value) {
-      config := {
-        -- Empirically determinied minially required simp options
-        beta := true
-        iota := true
-        zeta := false
-        eta := false
-        etaStruct := .none
-        proj := false
-      }
-      simpTheorems
-  }
-  mkExpectedTypeHint value result.expr
 
+  -- TODO: Make arities (or varnames) part of eqnInfo
+  let arities ← eqnInfo.declNames.mapM fun name => do
+      let ci ← getConstInfoDefn name
+      lambdaTelescope ci.value fun xs _body => return xs.size - eqnInfo.fixedPrefixSize
+
+  let t ← Meta.transform (← inferType value) (skipConstInApp := true) (pre := fun e => do
+    -- Need to beta-reduce first
+    let e' := e.headBeta
+    if e' != e then
+      return .visit e'
+    -- Look for PSigma redexes
+    if e.isAppOf ``PSigma.casesOn then
+      let args := e.getAppArgs
+      if 5 ≤ args.size then
+        let scrut := args[3]!
+        let k := args[4]!
+        let extra := args[5:]
+        if scrut.isAppOfArity ``PSigma.mk 4 then
+          let #[_, _, x, y] := scrut.getAppArgs | unreachable!
+          let e' := (k.beta #[x, y]).beta extra
+          return .visit e'
+    -- Look for PSum redexes
+    if e.isAppOf ``PSum.casesOn then
+      let args := e.getAppArgs
+      if 6 ≤ args.size then
+        let scrut := args[3]!
+        let k₁ := args[4]!
+        let k₂ := args[5]!
+        let extra := args[6:]
+        if scrut.isAppOfArity ``PSum.inl 3 then
+          let e' := (k₁.beta #[scrut.appArg!]).beta extra
+          return .visit e'
+        if scrut.isAppOfArity ``PSum.inr 3 then
+          let e' := (k₂.beta #[scrut.appArg!]).beta extra
+          return .visit e'
+    -- Look for _unary redexes
+    if e.isAppOf eqnInfo.declNameNonRec then
+      let args := e.getAppArgs
+      if eqnInfo.fixedPrefixSize + 1 ≤ args.size then
+        let packedArg := args.back
+          let (i, unpackedArgs) ← WF.unpackArg arities packedArg
+          let e' := .const eqnInfo.declNames[i]! e.getAppFn.constLevels!
+          let e' := mkAppN e' args.pop
+          let e' := mkAppN e' unpackedArgs
+          let e' := mkAppN e' args[eqnInfo.fixedPrefixSize+1:]
+          return .continue e'
+
+    return .continue e)
+  mkExpectedTypeHint value t
 
 /-- Given type `A ⊕' B ⊕' … ⊕' D`, return `[A, B, …, D]` -/
 partial def unpackPSum (type : Expr) : List Expr :=
