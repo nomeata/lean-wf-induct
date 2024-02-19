@@ -145,7 +145,6 @@ def mkProjAndN (n i : Nat) (e : Expr) : Expr := Id.run do
 -- Non-tail-positions: Collect induction hypotheses
 -- (TODO: Worth folding with `foldCalls`, like before?)
 -- (TODO: Accumulated with a left fold)
--- (TODO: Revert context in the leaf, based on local context?)
 partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Array Expr) := do
   if ! e.containsFVar oldIH then
     return #[]
@@ -158,14 +157,6 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
     let ihs ← collectIHs fn oldIH newIH arg
 
     return ihs.push (mkAppN (.fvar newIH) #[arg', proof'])
-
-  if let .letE n t v b _ := e then
-    let ihs1 ← collectIHs fn oldIH newIH v
-    let v' ← foldCalls fn oldIH v
-    return ← withLetDecl n t v' fun x => do
-      let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
-      let ihs2 ← ihs2.mapM (mkLetFVars (usedLetOnly := true) #[x] ·)
-      return ihs1 ++ ihs2
 
   if let some (n, t, v, b) := e.letFun? then
     let ihs1 ← collectIHs fn oldIH newIH v
@@ -220,28 +211,41 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
   if e.getAppArgs.any (·.isFVarOf oldIH) then
     throwError "collectIHs: could not collect recursive calls from call {indentExpr e}"
 
-  if let .app e1 e2 := e then
+  match e with
+  | .letE n t v b _ =>
+    let ihs1 ← collectIHs fn oldIH newIH v
+    let v' ← foldCalls fn oldIH v
+    return ← withLetDecl n t v' fun x => do
+      let ihs2 ← collectIHs fn oldIH newIH (b.instantiate1 x)
+      let ihs2 ← ihs2.mapM (mkLetFVars (usedLetOnly := true) #[x] ·)
+      return ihs1 ++ ihs2
+
+  | .app e1 e2 =>
     return (← collectIHs fn oldIH newIH e1) ++ (← collectIHs fn oldIH newIH e2)
 
-  if let .proj _ _ e := e then
+  | .proj _ _ e =>
     return ← collectIHs fn oldIH newIH e
 
-  if let .forallE n t body bi := e then
+  | .forallE n t body bi =>
     let t' ← foldCalls fn oldIH t
     return ← withLocalDecl n bi t' fun x => do
       let ihs ← collectIHs fn oldIH newIH (body.instantiate1 x)
       ihs.mapM (mkLambdaFVars (usedOnly := true) #[x])
 
-  if let .lam n t body bi := e then
+  | .lam n t body bi =>
     let t' ← foldCalls fn oldIH t
     return ← withLocalDecl n bi t' fun x => do
       let ihs ← collectIHs fn oldIH newIH (body.instantiate1 x)
       ihs.mapM (mkLambdaFVars (usedOnly := true) #[x])
 
-  if let .mdata _m b := e then
+  | .mdata _m b =>
     return ← collectIHs fn oldIH newIH b
 
-  throwError "collectIHs: could not collect recursive calls from {indentExpr e}"
+  | .sort .. | .lit .. | .const .. | .mvar .. | .bvar .. =>
+    unreachable! -- cannot contain free variables, so early exit above kicks in
+
+  | .fvar _ =>
+    throwError "collectIHs: could not collect recursive calls, unsaturated application of old induction hypothesis"
 
 def withLetDecls {α} (vals : Array Expr) (k : Array FVarId → MetaM α) (i : Nat := 0) : MetaM α := do
   if h : i < vals.size then
