@@ -388,72 +388,73 @@ partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : Me
       if body == body' then
         throwError "Term {body} is not a fixF application"
       else
-        findFixF body' (fun args e' => k (params ++ args) e')
+        findFixF body' fun args e' => k (params ++ args) e'
 
 def deriveUnaryInduction (name : Name) : MetaM Name := do
+  let inductName := .append name `induct
+  if ← hasConst inductName then return inductName
+
   let info ← getConstInfo name
   let e := Expr.const name (info.levelParams.map mkLevelParam)
-  findFixF e fun params body => do
+  findFixF e fun params body => body.withApp fun f fixArgs => do
+    -- logInfo f!"{fixArgs}"
     unless params.size > 0 do
       throwError "Term {e} is not a lambda application"
-    body.withApp fun f fixArgs => do
-      -- logInfo f!"{fixArgs}"
-      unless f.isConstOf ``WellFounded.fixF do
-        throwError "Term isn’t application of {``WellFounded.fixF}, but of {f}"
-      let #[argType, rel, _motive, body, arg, acc] := fixArgs |
-        throwError "Application of WellFounded.fixF has wrong arity {fixArgs.size}"
-      unless ← isDefEq arg params.back do
-        throwError "fixF application argument {arg} is not function argument "
-      let [argLevel, _motiveLevel] := f.constLevels! | unreachable!
-      -- logInfo body
-      -- mkFresh
+    unless f.isConstOf ``WellFounded.fixF do
+      throwError "Term isn’t application of {``WellFounded.fixF}, but of {f}"
+    let #[argType, rel, _motive, body, arg, acc] := fixArgs |
+      throwError "Application of WellFounded.fixF has wrong arity {fixArgs.size}"
+    unless ← isDefEq arg params.back do
+      throwError "fixF application argument {arg} is not function argument "
+    let [argLevel, _motiveLevel] := f.constLevels! | unreachable!
+    -- logInfo body
+    -- mkFresh
 
-      let motiveType ← mkArrow argType (.sort levelZero)
-      withLocalDecl `motive .default motiveType fun motive => do
+    let motiveType ← mkArrow argType (.sort levelZero)
+    withLocalDecl `motive .default motiveType fun motive => do
 
-      let e' := mkAppN (.const ``WellFounded.fixF [argLevel, levelZero]) #[argType, rel, motive]
-      let fn := mkAppN e params.pop
-      let body' ← forallTelescope (← inferType e').bindingDomain! fun xs _ => do
-        let #[param, genIH] := xs | unreachable!
-        -- open body with the same arg
-        let body ← instantiateLambda body #[param]
-        removeLamda body fun oldIH body => do
-          let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] #[] (.app motive param) oldIH genIH.fvarId! #[] body
-          if body'.containsFVar oldIH then
-            throwError m!"Did not fully eliminate {mkFVar oldIH} from induction principle body:{indentExpr body}"
-          mkLambdaFVars #[param, genIH] body'
+    let e' := mkAppN (.const ``WellFounded.fixF [argLevel, levelZero]) #[argType, rel, motive]
+    let fn := mkAppN e params.pop
+    let body' ← forallTelescope (← inferType e').bindingDomain! fun xs _ => do
+      let #[param, genIH] := xs | unreachable!
+      -- open body with the same arg
+      let body ← instantiateLambda body #[param]
+      removeLamda body fun oldIH body => do
+        let body' ← buildInductionBody motive.fvarId! fn #[genIH.fvarId!] #[] (.app motive param) oldIH genIH.fvarId! #[] body
+        if body'.containsFVar oldIH then
+          throwError m!"Did not fully eliminate {mkFVar oldIH} from induction principle body:{indentExpr body}"
+        mkLambdaFVars #[param, genIH] body'
 
-      let e' := mkAppN e' #[body', arg, acc]
+    let e' := mkAppN e' #[body', arg, acc]
 
-      let e' ← mkLambdaFVars #[params.back] e'
-      let mvars ← getMVarsNoDelayed e'
-      for mvar in mvars, i in [:mvars.size] do
-        mvar.setUserName s!"case{i+1}"
-      let e' ← mkLambdaFVars (binderInfoForMVars := .default) (mvars.map .mvar) e'
+    let e' ← mkLambdaFVars #[params.back] e'
+    let mvars ← getMVarsNoDelayed e'
+    for mvar in mvars, i in [:mvars.size] do
+      mvar.setUserName s!"case{i+1}"
+    let e' ← mkLambdaFVars (binderInfoForMVars := .default) (mvars.map .mvar) e'
 
-      -- We could pass (usedOnly := true) below, and get nicer induction principles that
-      -- do do not mention odd unused parameters.
-      -- But the downside is that automatic instantiation of the principle (e.g. when
-      -- deriving the binary one) is much harder, as one would have to infer which parameters
-      -- to pass. So for now lets just keep them around.
-      let e' ← mkLambdaFVars (binderInfoForMVars := .default) (params.pop ++ #[motive]) e'
-      let e' ← instantiateMVars e'
+    -- We could pass (usedOnly := true) below, and get nicer induction principles that
+    -- do do not mention odd unused parameters.
+    -- But the downside is that automatic instantiation of the principle (e.g. when
+    -- deriving the binary one) is much harder, as one would have to infer which parameters
+    -- to pass. So for now lets just keep them around.
+    let e' ← mkLambdaFVars (binderInfoForMVars := .default) (params.pop ++ #[motive]) e'
+    let e' ← instantiateMVars e'
 
-      let eTyp ← inferType e'
-      let eTyp ← elimOptParam eTyp
-      -- logInfo m!"eTyp: {eTyp}"
-      -- logInfo m!"e has MVar: {e'.hasMVar}"
-      unless (← isTypeCorrect e') do
-        logError m!"failed to derive induction priciple:{indentExpr e'}"
-        check e'
+    let eTyp ← inferType e'
+    let eTyp ← elimOptParam eTyp
+    -- logInfo m!"eTyp: {eTyp}"
+    -- logInfo m!"e has MVar: {e'.hasMVar}"
+    unless (← isTypeCorrect e') do
+      logError m!"failed to derive induction priciple:{indentExpr e'}"
+      check e'
 
-      let inductName := .append name `induct
-      addDecl <| Declaration.defnDecl {
-          name := inductName, levelParams := info.levelParams, type := eTyp, value := e'
-          hints := ReducibilityHints.regular 0
-          safety := DefinitionSafety.safe
-      }
-      return inductName
+    addDecl <| Declaration.defnDecl {
+        name := inductName, levelParams := info.levelParams, type := eTyp, value := e'
+        hints := ReducibilityHints.regular 0
+        safety := DefinitionSafety.safe
+    }
+    return inductName
 
 /--
 In the type of `value`, reduces
@@ -632,6 +633,9 @@ Takes an induction principle where the motive is a `PSigma`/`PSum` type and
 unpacks it into a joint and n-ary induction principle.
 -/
 def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : MetaM Name := do
+  let inductName := .append eqnInfo.declNames[0]! `mutual_induct
+  if ← hasConst inductName then return inductName
+
   let ci ← getConstInfo unaryInductName
   let us := ci.levelParams
   let value := .const ci.name (us.map mkLevelParam)
@@ -676,7 +680,6 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
   let type ← inferType value
   let type ← elimOptParam type
 
-  let inductName := .append eqnInfo.declNames[0]! `mutual_induct
   addDecl <| Declaration.defnDecl {
       name := inductName, levelParams := ci.levelParams, type, value,
       hints := ReducibilityHints.regular 0
@@ -690,18 +693,19 @@ def deriveUnpackedInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): Met
   let us := ci.levelParams
 
   for name in eqnInfo.declNames, idx in [:eqnInfo.declNames.size] do
-    let value ← forallTelescope ci.type fun xs _body => do
-      let value := .const ci.name (us.map mkLevelParam)
-      let value := mkAppN value xs
-      let value := mkProjAndN eqnInfo.declNames.size idx value
-      mkLambdaFVars xs value
-    let type ← inferType value
     let inductName := .append name `induct
-    addDecl <| Declaration.defnDecl {
-      name := inductName, levelParams := us, type, value,
-      hints := ReducibilityHints.regular 0
-      safety := DefinitionSafety.safe
-    }
+    unless ← hasConst inductName do
+      let value ← forallTelescope ci.type fun xs _body => do
+        let value := .const ci.name (us.map mkLevelParam)
+        let value := mkAppN value xs
+        let value := mkProjAndN eqnInfo.declNames.size idx value
+        mkLambdaFVars xs value
+      let type ← inferType value
+      addDecl <| Declaration.defnDecl {
+        name := inductName, levelParams := us, type, value,
+        hints := ReducibilityHints.regular 0
+        safety := DefinitionSafety.safe
+      }
 
 def deriveInduction (name : Name) : MetaM Unit := do
   if let some eqnInfo := WF.eqnInfoExt.find? (← getEnv) name then

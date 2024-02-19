@@ -677,3 +677,54 @@ info: Dite.foo.induct (motive : Nat → Prop)
 #check foo.induct
 
 end Dite
+
+namespace CommandIdempotence
+
+-- This checks that the `derive_induction` command gracefully handles being called twice
+
+mutual
+def even : Nat → Bool
+  | 0 => true
+  | n+1 => odd n
+termination_by n => n
+def odd : Nat → Bool
+  | 0 => false
+  | n+1 => even n
+termination_by n => n
+end
+
+derive_induction even._mutual
+
+/--
+info: CommandIdempotence.even._mutual.induct (motive : Nat ⊕' Nat → Prop) (case1 : motive (PSum.inl 0))
+  (case2 : ∀ (n : Nat), motive (PSum.inr n) → motive (PSum.inl (Nat.succ n))) (case3 : motive (PSum.inr 0))
+  (case4 : ∀ (n : Nat), motive (PSum.inl n) → motive (PSum.inr (Nat.succ n))) (x : Nat ⊕' Nat) : motive x
+-/
+#guard_msgs in
+#check even._mutual.induct
+
+/-- error: unknown constant 'CommandIdempotence.even.induct' -/
+#guard_msgs in
+#check even.induct
+
+derive_induction even
+
+/--
+info: CommandIdempotence.even._mutual.induct (motive : Nat ⊕' Nat → Prop) (case1 : motive (PSum.inl 0))
+  (case2 : ∀ (n : Nat), motive (PSum.inr n) → motive (PSum.inl (Nat.succ n))) (case3 : motive (PSum.inr 0))
+  (case4 : ∀ (n : Nat), motive (PSum.inl n) → motive (PSum.inr (Nat.succ n))) (x : Nat ⊕' Nat) : motive x
+-/
+#guard_msgs in
+#check even._mutual.induct
+
+/--
+info: CommandIdempotence.even.induct (motive1 motive2 : Nat → Prop) (case1 : motive1 0)
+  (case2 : ∀ (n : Nat), motive2 n → motive1 (Nat.succ n)) (case3 : motive2 0)
+  (case4 : ∀ (n : Nat), motive1 n → motive2 (Nat.succ n)) (x : Nat) : motive1 x
+-/
+#guard_msgs in
+#check even.induct
+
+derive_induction even
+
+end CommandIdempotence
