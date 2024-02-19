@@ -520,11 +520,12 @@ partial def mkPSigmaCasesOn (y : FVarId) (codomain : Expr) (k : Array Expr → M
   go mvar.mvarId! y #[]
   instantiateMVars mvar
 
-/-- Given expression `e` with type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]`
-return an expression of type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]` -/
--- TODO: This might not yet quite work if R depends on x
+/-- Given expression `e` with type `(x : A) → (y : B[x]) → … → (z : D[x,y]) → R`
+return an expression of type `(x : A ⊗' B ⊗' … ⊗' D) → R` -/
 partial def curryPSum (e : Expr) : MetaM Expr := do
   let (d, codomain) ← forallTelescope (← inferType e) fun xs codomain => do
+    if xs.any (codomain.containsFVar ·.fvarId!) then
+      throwError "curryPSum: codomain depends on domain variables"
     let mut d ← inferType xs.back
     for x in xs.pop.reverse do
       d ← mkLambdaFVars #[x] d
