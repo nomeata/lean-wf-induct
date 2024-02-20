@@ -112,7 +112,7 @@ foo._unary.induct : {motive : (a ⊗' b) ⊕' c → Prop} →
   (case1 : ∀ …, motive (PSum.inl (x,y)) →  …) → … →
   (x : (a ⊗' b) ⊕' c) → motive x
 ```
-will will first be turned into a joint induction theorem of the form
+will first in `unpackMutualInduction` be turned into a joint induction theorem of the form
 ```
 foo.mutual_induct : {motive1 : a → b → Prop} {motive2 : c → Prop} →
   (case1 : ∀ …, motive1 x y  →  …) → … →
@@ -121,8 +121,8 @@ foo.mutual_induct : {motive1 : a → b → Prop} {motive2 : c → Prop} →
 where all the `PSum`/`PSigma` encoding has been resolved. This theorem is attached to the
 name of the first function in the mutual group, like the `._unary` definition.
 
-Finally, for each of the funtions in the mutual group, a simple projection yields the final
-`foo.induct` theorem:
+Finally, in `deriveUnpackedInduction`, for each of the funtions in the mutual group, a simple
+projection yields the final `foo.induct` theorem:
 ```
 foo.induct : {motive1 : a → b → Prop} {motive2 : c → Prop} →
   (case1 : ∀ …, motive1 x y  →  …) → … →
