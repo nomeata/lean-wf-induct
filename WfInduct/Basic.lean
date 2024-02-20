@@ -139,36 +139,6 @@ namespace Lean.Elab.WF.Induct
 open Lean Elab Command Meta
 
 
--- From PackMutual
-/--
-  Combine/pack the values of the different definitions in a single value
-  `x` is `PSum`, and we use `PSum.casesOn` to select the appropriate `preDefs.value`.
-  See: `packMutual`.
-  Remark: this method does not replace the nested recursive `preDefValues` applications.
-  This step is performed by `transform` with the following `post` method.
- -/
-private partial def packValues (x : Expr) (codomain : Expr) (preDefValues : Array Expr) : MetaM Expr := do
-  let varNames := preDefValues.map fun val =>
-    if val.isLambda then val.bindingName! else `x
-  let mvar ← mkFreshExprSyntheticOpaqueMVar codomain
-  let rec go (mvarId : MVarId) (x : FVarId) (i : Nat) : MetaM Unit := do
-    if i < preDefValues.size - 1 then
-      /-
-        Names for the `cases` tactics. The names are important to preserve the user provided names (unary functions).
-      -/
-      let givenNames : Array AltVarNames :=
-         if i == preDefValues.size - 2 then
-           #[{ varNames := [varNames[i]!] }, { varNames := [varNames[i+1]!] }]
-         else
-           #[{ varNames := [varNames[i]!] }]
-       let #[s₁, s₂] ← mvarId.cases x (givenNames := givenNames) | unreachable!
-      s₁.mvarId.assign (mkApp preDefValues[i]! s₁.fields[0]!).headBeta
-      go s₂.mvarId s₂.fields[0]!.fvarId! (i+1)
-    else
-      mvarId.assign (mkApp preDefValues[i]! (mkFVar x)).headBeta
-  go mvar.mvarId! x.fvarId! 0
-  instantiateMVars mvar
-
 /-- Opens the body of a lambda, _without_ putting the free variable into the local context.
 This is used when replacing that paramters with a different expression.
 This way it will not be picked up by metavariables.
@@ -654,7 +624,7 @@ partial def uncurryPSumArrow (domain : Expr) (codomain : Expr) : MetaM Expr := d
 Given expression `e` with type `(x : A ⊗' B ⊗' … ⊗' D) → R[x]`
 return expression of type `(x : A) → (y : B) → … → (z : D) → R[(x,y,z)]`
 -/
-partial def uncurryPSum (e : Expr) : MetaM Expr := do
+partial def uncurryPSigma (e : Expr) : MetaM Expr := do
   let packedDomain := (← inferType e).bindingDomain!
   go packedDomain packedDomain #[]
 where
@@ -670,7 +640,7 @@ where
         mkLambdaFVars #[x] (e.beta #[packedArg])
 
 /--
-Iterated `PSigma.casesOn`: Given `y : a ⊕' b ⊕ …` and a type `codomain`,
+Iterated `PSigma.casesOn`: Given `y : a ⊗' b ⊗' …` and a type `codomain`,
 and `alt : (x : a) → (y : b) → codomain`, uses `PSigma.casesOn` to invoke `alt` on `y`.
 
 This very is similar to `Lean.Predefinition.WF.mkPSigmaCasesOn`, but takes a lambda rather than
@@ -692,7 +662,7 @@ partial def mkPSigmaNCasesOn (y : FVarId) (codomain : Expr) (alt : Expr) : MetaM
 Given expression `e` with type `(x : A) → (y : B[x]) → … → (z : D[x,y]) → R`
 return an expression of type `(x : A ⊗' B ⊗' … ⊗' D) → R`.
 -/
-partial def curryPSum (e : Expr) : MetaM Expr := do
+partial def curryPSigma (e : Expr) : MetaM Expr := do
   let (d, codomain) ← forallTelescope (← inferType e) fun xs codomain => do
     if xs.any (codomain.containsFVar ·.fvarId!) then
       throwError "curryPSum: codomain depends on domain variables"
@@ -710,7 +680,7 @@ Given type `(a ⊗' b ⊕' c ⊗' d) → e`, brings `a → b → e` and `c → d
 into scope and passes them to the contiuation.
 The `name` is used to form the variable names; uses `name1`, `name2`, … if there are multiple.
 -/
-partial def withCurriedDecl {α} (name : String) (type : Expr) (k : Array Expr → MetaM α) : MetaM α := do
+def withCurriedDecl {α} (name : String) (type : Expr) (k : Array Expr → MetaM α) : MetaM α := do
   let some (d,c) := type.arrow? | throwError "withCurriedDecl: Expected arrow"
   let motiveTypes ← (unpackPSum d).mapM (uncurryPSumArrow · c)
   if let [t] := motiveTypes then
@@ -727,8 +697,8 @@ where
       go ts (acc.push x)
 
 
-/-- Given expression `e` of type `(x : a ⊗ b + c ⊗ d) → e[x]`,
-returns expression of type
+/--
+Given expression `e` of type `(x : a ⊗' b ⊕' c ⊗' d) → e[x]`, returns expression of type
 ```
 ((x: a) → (y : b) → e[inl (x,y)]) ∧ ((x : c) → (y : d) → e[inr (x,y)])
 ```
@@ -744,7 +714,7 @@ def deMorganPSumPSigma (e : Expr) : MetaM Expr := do
           let packedArg ← WF.mkMutualArg unaryTypes.length packedDomain i x
           mkLambdaFVars #[x] (e.beta #[packedArg])
       -- nary : (x : a) → (y : b) → e[inl (x,y)]
-      let nary ← uncurryPSum unary
+      let nary ← uncurryPSigma unary
       es := es.push nary
     mkAndIntroN es
   where
@@ -753,6 +723,39 @@ def deMorganPSumPSigma (e : Expr) : MetaM Expr := do
         withLetDecl `packed (← inferType e) e fun e => do mkLetFVars #[e] (← k e)
       else
         k e
+
+
+-- Adapted from PackMutual: TODO: Compare and unify
+/--
+  Combine/pack the values of the different definitions in a single value
+  `x` is `PSum`, and we use `PSum.casesOn` to select the appropriate `preDefs.value`.
+  See: `packMutual`.
+  Remark: this method does not replace the nested recursive `preDefValues` applications.
+  This step is performed by `transform` with the following `post` method.
+ -/
+private def packValues (x : Expr) (codomain : Expr) (preDefValues : Array Expr) : MetaM Expr := do
+  let varNames := preDefValues.map fun val =>
+    if val.isLambda then val.bindingName! else `x
+  let mvar ← mkFreshExprSyntheticOpaqueMVar codomain
+  let rec go (mvarId : MVarId) (x : FVarId) (i : Nat) : MetaM Unit := do
+    if i < preDefValues.size - 1 then
+      /-
+        Names for the `cases` tactics. The names are important to preserve the user provided names (unary functions).
+      -/
+      let givenNames : Array AltVarNames :=
+         if i == preDefValues.size - 2 then
+           #[{ varNames := [varNames[i]!] }, { varNames := [varNames[i+1]!] }]
+         else
+           #[{ varNames := [varNames[i]!] }]
+       let #[s₁, s₂] ← mvarId.cases x (givenNames := givenNames) | unreachable!
+      s₁.mvarId.assign (mkApp preDefValues[i]! s₁.fields[0]!).headBeta
+      go s₂.mvarId s₂.fields[0]!.fvarId! (i+1)
+    else
+      mvarId.assign (mkApp preDefValues[i]! (mkFVar x)).headBeta
+    termination_by preDefValues.size - 1 - i
+  go mvar.mvarId! x.fvarId! 0
+  instantiateMVars mvar
+
 
 /--
 Takes an induction principle where the motive is a `PSigma`/`PSum` type and
@@ -787,7 +790,7 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
       -- Combine them into a packed motive (motive : a ⊗' b ⊕' c ⊗' d → Prop), and use that
       let motive ← forallBoundedTelescope packedMotiveType (some 1) fun xs motiveCodomain => do
         let #[x] := xs | throwError "packedMotiveType is not a forall: {packedMotiveType}"
-        let packedMotives ← motives.mapM curryPSum
+        let packedMotives ← motives.mapM curryPSigma
         let motiveBody ← packValues x motiveCodomain packedMotives
         mkLambdaFVars xs motiveBody
       let type ← instantiateForall type #[motive]
