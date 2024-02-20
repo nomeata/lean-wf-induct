@@ -105,9 +105,29 @@ For a non-mutual, unary function `foo` (or else for the `_unary` function), we
 
 The resulting term then becomes `foo.induct` at its inferred type.
 
-If `foo` is not unary and/or part of a mutual reduction, then TODO
+If `foo` is not unary and/or part of a mutual reduction, then the induction theorem for `foo._unary`
+of the form
+```
+foo._unary.induct : {motive : (a ⊗' b) ⊕' c → Prop} →
+  (case1 : ∀ …, motive (PSum.inl (x,y)) →  …) → … →
+  (x : (a ⊗' b) ⊕' c) → motive x
+```
+will will first be turned into a joint induction theorem of the form
+```
+foo.mutual_induct : {motive1 : a → b → Prop} {motive2 : c → Prop} →
+  (case1 : ∀ …, motive1 x y  →  …) → … →
+  ((x : a) → (y : b) → motive1 x y) ∧ ((z : c) → motive2 z)
+```
+where all the `PSum`/`PSigma` encoding has been resolved. This theorem is attached to the
+name of the first function in the mutual group, like the `._unary` definition.
 
-
+Finally, for each of the funtions in the mutual group, a simple projection yields the final
+`foo.induct` theorem:
+```
+foo.induct : {motive1 : a → b → Prop} {motive2 : c → Prop} →
+  (case1 : ∀ …, motive1 x y  →  …) → … →
+  (x : a) → (y : b) → motive1 x y
+```
 
 -/
 
@@ -547,11 +567,8 @@ def deriveUnaryInduction (name : Name) : MetaM Name := do
       logError m!"failed to derive induction priciple:{indentExpr e'}"
       check e'
 
-    addDecl <| Declaration.defnDecl {
-        name := inductName, levelParams := info.levelParams, type := eTyp, value := e'
-        hints := ReducibilityHints.regular 0
-        safety := DefinitionSafety.safe
-    }
+    addDecl <| Declaration.thmDecl
+      { name := inductName, levelParams := info.levelParams, type := eTyp, value := e' }
     return inductName
 
 /--
@@ -737,10 +754,14 @@ def deMorganPSumPSigma (e : Expr) : MetaM Expr := do
 
 /--
 Takes an induction principle where the motive is a `PSigma`/`PSum` type and
-unpacks it into a joint and n-ary induction principle.
+unpacks it into a n-ary and (possibly) joint induction principle.
 -/
 def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : MetaM Name := do
-  let inductName := .append eqnInfo.declNames[0]! `mutual_induct
+  let inductName := if eqnInfo.declNames.size > 1 then
+    .append eqnInfo.declNames[0]! `mutual_induct
+  else
+    -- If there is no mutual recursion, generate the `foo.induct` directly.
+    .append eqnInfo.declNames[0]! `induct
   if ← hasConst inductName then return inductName
 
   let ci ← getConstInfo unaryInductName
@@ -787,32 +808,25 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
   let type ← inferType value
   let type ← elimOptParam type
 
-  addDecl <| Declaration.defnDecl {
-      name := inductName, levelParams := ci.levelParams, type, value,
-      hints := ReducibilityHints.regular 0
-      safety := DefinitionSafety.safe
-  }
+  addDecl <| Declaration.thmDecl
+    { name := inductName, levelParams := ci.levelParams, type, value }
   return inductName
 
 def deriveUnpackedInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): MetaM Unit := do
   let unpackedInductName ← unpackMutualInduction eqnInfo unaryInductName
-  let ci ← getConstInfoDefn unpackedInductName
-  let us := ci.levelParams
+  let ci ← getConstInfo unpackedInductName
+  let levelParams := ci.levelParams
 
   for name in eqnInfo.declNames, idx in [:eqnInfo.declNames.size] do
     let inductName := .append name `induct
     unless ← hasConst inductName do
       let value ← forallTelescope ci.type fun xs _body => do
-        let value := .const ci.name (us.map mkLevelParam)
+        let value := .const ci.name (levelParams.map mkLevelParam)
         let value := mkAppN value xs
         let value := mkProjAndN eqnInfo.declNames.size idx value
         mkLambdaFVars xs value
       let type ← inferType value
-      addDecl <| Declaration.defnDecl {
-        name := inductName, levelParams := us, type, value,
-        hints := ReducibilityHints.regular 0
-        safety := DefinitionSafety.safe
-      }
+      addDecl <| Declaration.thmDecl { name := inductName, levelParams, type, value }
 
 def deriveInduction (name : Name) : MetaM Unit := do
   if let some eqnInfo := WF.eqnInfoExt.find? (← getEnv) name then
