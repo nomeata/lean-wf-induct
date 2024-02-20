@@ -283,7 +283,7 @@ def mkProjAndN (n i : Nat) (e : Expr) : Expr := Id.run do
 -- (TODO: Worth folding with `foldCalls`, like before?)
 -- (TODO: Accumulated with a left fold)
 partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Array Expr) := do
-  if ! e.containsFVar oldIH then
+  unless e.containsFVar oldIH do
     return #[]
 
   if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
@@ -304,7 +304,6 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
       return ihs1 ++ ihs2
 
   if let some matcherApp ← matchMatcherOrCasesOnApp? e then
-    -- logInfo m!"{matcherApp.matcherName} {Expr.fvar oldIH}/{Expr.fvar newIH} => {matcherApp.discrs} {matcherApp.remaining}"
     if matcherApp.remaining.size == 1 && matcherApp.remaining[0]!.isFVarOf oldIH then
 
       let matcherApp' ← matcherApp.transform
@@ -332,7 +331,6 @@ partial def collectIHs (fn : Expr) (oldIH newIH : FVarId) (e : Expr) : MetaM (Ar
         (onRemaining := fun _ => pure #[mkFVar newIH])
       let matcherApp'' ← matcherApp'.inferMatchType
 
-      -- check matcherApp''.toExpr
       return #[ matcherApp''.toExpr ]
 
   if e.getAppArgs.any (·.isFVarOf oldIH) then
@@ -507,6 +505,10 @@ partial def findFixF {α} (e : Expr) (k : Array Expr → Expr → MetaM α) : Me
       else
         findFixF body' fun args e' => k (params ++ args) e'
 
+/--
+Given a definition `foo` defined via `WellFounded.fixF`, derive a suitable induction principle
+`foo.induct` for it. See module doc for details.
+ -/
 def deriveUnaryInduction (name : Name) : MetaM Name := do
   let inductName := .append name `induct
   if ← hasConst inductName then return inductName
@@ -812,6 +814,7 @@ def unpackMutualInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name) : Meta
     { name := inductName, levelParams := ci.levelParams, type, value }
   return inductName
 
+/-- Given `foo._unary.induct`, define `foo.mutual_induct` and then `foo.induct`, `bar.induct`, … -/
 def deriveUnpackedInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): MetaM Unit := do
   let unpackedInductName ← unpackMutualInduction eqnInfo unaryInductName
   let ci ← getConstInfo unpackedInductName
@@ -828,6 +831,9 @@ def deriveUnpackedInduction (eqnInfo : WF.EqnInfo) (unaryInductName : Name): Met
       let type ← inferType value
       addDecl <| Declaration.thmDecl { name := inductName, levelParams, type, value }
 
+/--
+Given a recursively defined function `foo`, derives `foo.induct`. See the module doc for detials.
+-/
 def deriveInduction (name : Name) : MetaM Unit := do
   if let some eqnInfo := WF.eqnInfoExt.find? (← getEnv) name then
     let unaryInductName ← deriveUnaryInduction eqnInfo.declNameNonRec
@@ -836,6 +842,14 @@ def deriveInduction (name : Name) : MetaM Unit := do
   else
     _ ← deriveUnaryInduction name
 
+/--
+`derive_induction foo`, where `foo` is the name of a function defined using well-founded recursion,
+will define a theorem `foo.induct` which provides an induction principle that follows the branching
+and recursion pattern of `foo`.
+
+If `foo` is part of a mutual recursion group, this defines such `.induct`-theorems for all functions
+in the group.
+-/
 elab "derive_induction " ident:ident : command => runTermElabM fun _xs => do
   let name ← resolveGlobalConstNoOverloadWithInfo ident
   deriveInduction name
