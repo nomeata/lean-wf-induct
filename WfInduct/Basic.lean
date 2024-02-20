@@ -184,7 +184,7 @@ def removeLamda {α} (e : Expr) (k : FVarId → Expr →  MetaM α) : MetaM α :
 -- oldIH better be unused
 partial def foldCalls (fn : Expr) (oldIH : FVarId) (e : Expr) : MetaM Expr := do
   -- logInfo m!"foldCalls {mkFVar oldIH} {indentExpr e}"
-  if ! e.containsFVar oldIH then
+  unless e.containsFVar oldIH do
     return e
 
   if e.getAppNumArgs = 2 && e.getAppFn.isFVarOf oldIH then
